@@ -2,7 +2,7 @@ package com.github.noamm9.commands.impl
 
 import com.github.noamm9.commands.BaseCommand
 import com.github.noamm9.commands.CommandNodeBuilder
-import com.github.noamm9.features.impl.dungeon.waypoints.SecretRoutes
+import com.github.noamm9.critsaddons.features.impl.critsaddons.waypoints.SecretRoutes
 
 object SecretRouteCommand: BaseCommand("nsr") {
     override fun CommandNodeBuilder.build() {

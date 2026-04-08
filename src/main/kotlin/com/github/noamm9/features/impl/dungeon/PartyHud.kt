@@ -1,4 +1,4 @@
-package com.github.noamm9.features.impl.dungeon
+package com.github.noamm9.critsaddons.features.impl.critsaddons
 
 import com.github.noamm9.NoammAddons
 import com.github.noamm9.event.impl.MouseClickEvent

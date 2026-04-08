@@ -1,10 +1,11 @@
-package com.github.noamm9.features.impl.dungeon.waypoints
+package com.github.noamm9.critsaddons.features.impl.critsaddons.waypoints
 
 import com.github.noamm9.NoammAddons
 import com.github.noamm9.event.impl.DungeonEvent
 import com.github.noamm9.event.impl.RenderWorldEvent
 import com.github.noamm9.event.impl.WorldChangeEvent
 import com.github.noamm9.features.Feature
+import com.github.noamm9.features.impl.dungeon.waypoints.DungeonWaypoints
 import com.github.noamm9.utils.WorldUtils
 import com.github.noamm9.utils.dungeons.enums.SecretType
 import com.github.noamm9.utils.dungeons.map.core.UniqueRoom

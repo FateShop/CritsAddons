@@ -1,4 +1,4 @@
-package com.github.noamm9.features.impl.dungeon
+package com.github.noamm9.critsaddons.features.impl.critsaddons
 
 import com.github.noamm9.event.impl.ChatMessageEvent
 import com.github.noamm9.event.impl.ContainerEvent

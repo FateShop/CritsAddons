@@ -1,4 +1,4 @@
-package com.github.noamm9.features.impl.dungeon.waypoints
+package com.github.noamm9.critsaddons.features.impl.critsaddons.waypoints
 
 import com.github.noamm9.NoammAddons
 import com.github.noamm9.NoammAddons.MOD_NAME
