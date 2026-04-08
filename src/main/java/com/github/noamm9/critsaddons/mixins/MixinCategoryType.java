@@ -17,8 +17,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 
 /**
-    Mixins to add a category to the config gui
-    String enumName = "CRITS_ADDONS";
+    Mixins to add a category to the config gui.
+    The category name must exactly match the package segment used by Feature.initCategory().
  */
 @Mixin(CategoryType.class)
 public class MixinCategoryType {
@@ -33,7 +33,7 @@ public class MixinCategoryType {
             unsafeField.setAccessible(true);
             Unsafe unsafe = (Unsafe) unsafeField.get(null);
 
-            String enumName = "CRITS_ADDONS";
+            String enumName = "CRITSADDONS";
             ArrayList<CategoryType> valuesList = new ArrayList<>(Arrays.asList($VALUES));
             int newOrdinal = valuesList.size();
 

@@ -1,9 +1,60 @@
-# NoammAddons's Addon Mod Template
+# CritsAddons 1.21.10
 
-### Project-Specific Notes
-- In gradle.properties, set noammaddons-version to the version you want to build upon.
-- The Mod is configured with Mojang Mappings.
+> Addon features for NoammAddons on Minecraft 1.21.10.
 
-### How to use
-1. Click the **"Use this template"** button above.
-2. Clone your new repository.
+----
+
+## What is this?
+
+CritsAddons is an addon mod built on top of **NoammAddons**.  
+It adds extra client-side features while using NoammAddons as its base dependency.
+
+Current features include:
+
+* Party Finder
+* Party HUD
+* Secret Routes
+* Persistent secret head rendering
+
+----
+
+## How to install?
+
+1. Install **[Fabric for Minecraft 1.21.10](https://fabricmc.net/use/installer/)**
+2. Install **[Fabric API](https://modrinth.com/mod/fabric-api)** and **[Fabric Language Kotlin](https://modrinth.com/mod/fabric-language-kotlin)**
+3. Install **NoammAddons** for Minecraft `1.21.10`
+4. Download the latest **CritsAddons** `.jar` from the [**Releases page**](https://github.com/Noamm9/CritsAddons/releases)
+5. Put both `.jar` files into your `.minecraft/mods` folder
+6. Launch Minecraft using the **Fabric** profile
+
+* Keep **NoammAddons** installed. CritsAddons depends on it and will not work by itself.
+* Most settings are available through the NoammAddons config UI.
+* The latest downloadable builds are available on the [**Releases page**](https://github.com/Noamm9/CritsAddons/releases).
+
+----
+
+## Features
+
+CritsAddons currently includes:
+
+* **Party Finder** additions
+* **Party HUD**
+* **Secret Routes**
+* **Persistent secret heads** for easier route recording
+
+More addon-specific features can be added over time without modifying the main NoammAddons repo directly.
+
+----
+
+## Contributions
+
+Contributions are welcome. If you want to add a feature, port an existing one, or fix a bug, feel free to open an issue or submit a pull request.
+
+* Open an **Issue** to suggest something
+* Make a **Pull Request** to add or fix stuff
+
+----
+
+## License
+
+This project is licensed under the [**LICENSE.txt**](LICENSE.txt).
