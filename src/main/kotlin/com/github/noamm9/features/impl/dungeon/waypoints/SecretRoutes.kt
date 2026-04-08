@@ -54,10 +54,13 @@ object SecretRoutes : Feature(
     private const val INTERACT_DELAY_MS = 75L
     private const val WARP_SETTLE_TIMEOUT_MS = 3_000L
     private const val WAIT_TIMEOUT_MS = 5_000L
+    private const val MANA_CHECK_INTERVAL_MS = 100L
     private const val BLOCK_MESSAGE_COOLDOWN_MS = 1_000L
     private const val BREAK_RECORD_COOLDOWN_MS = 300L
     private const val BREAK_STEP_DELAY_MS = 100L
     private const val TNT_RECORD_COOLDOWN_MS = 300L
+    private const val ETHERWARP_MANA_COST = 100
+    private const val HYPERION_MANA_COST = 300
 
     private val startBlockColor = Color(80, 220, 255, 120)
     private val playbackKeybind by KeybindSetting("Playback Keybind").section("keybinds")
@@ -342,6 +345,8 @@ object SecretRoutes : Feature(
 
     private suspend fun playRoute(ctx: RoomContext, route: RoomRoute) {
         for (step in route.steps) {
+            waitForMana(step)
+
             when (step.type) {
                 RouteStepType.ETHERWARP -> {
                     val target = step.pos?.let { toWorld(it, ctx) } ?: continue
@@ -376,6 +381,22 @@ object SecretRoutes : Feature(
 
         ChatUtils.modMessage("&aFinished Secret Route for &e${ctx.room.name}&a.")
         releaseMovement()
+    }
+
+    private suspend fun waitForMana(step: RouteStep) {
+        val requiredMana = requiredManaFor(step) ?: return
+        var announcedWait = false
+
+        while (playbackJob?.isActive == true) {
+            if (availableMana() >= requiredMana) return
+
+            if (!announcedWait) {
+                ChatUtils.modMessage("&eWaiting for mana: need &b$requiredMana&e for ${step.type.name.lowercase().replace('_', ' ')}.")
+                announcedWait = true
+            }
+
+            delay(MANA_CHECK_INTERVAL_MS)
+        }
     }
 
     private suspend fun etherwarpTo(target: BlockPos, isStartStep: Boolean, rotation: MathUtils.Rotation? = null): Boolean {
@@ -526,6 +547,18 @@ object SecretRoutes : Feature(
 
     private fun currentRoomSecretCount(room: UniqueRoom): Int {
         return ActionBarParser.secrets ?: room.foundSecrets
+    }
+
+    private fun availableMana(): Int {
+        return ActionBarParser.currentMana + ActionBarParser.overflowMana
+    }
+
+    private fun requiredManaFor(step: RouteStep): Int? {
+        return when (step.type) {
+            RouteStepType.ETHERWARP -> ETHERWARP_MANA_COST
+            RouteStepType.USE_HYPERION -> HYPERION_MANA_COST
+            else -> null
+        }
     }
 
     private fun isRecordingCurrentRoom(): Boolean {
