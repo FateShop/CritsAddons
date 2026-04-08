@@ -1,4 +1,4 @@
-package com.github.noamm9.untitled.mixins;
+package com.github.noamm9.critsaddons.mixins;
 
 import com.github.noamm9.NoammAddons;
 import com.github.noamm9.ui.clickgui.CategoryType;
@@ -22,6 +22,6 @@ import java.util.Arrays;
 public class MixinMinecraft {
     @Inject(method = "setLevel", at = @At("HEAD"))
     public void onSetLevel(ClientLevel clientLevel, CallbackInfo ci) {
-        NoammAddons.INSTANCE.getLogger().info("Hi From Example Mixins");
+        NoammAddons.INSTANCE.logger.info("Hi From CritsAddons Mixins");
     }
 }

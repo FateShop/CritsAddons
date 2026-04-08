@@ -1,24 +1,24 @@
 {
   "schemaVersion": 1,
-  "id": "untitled",
+  "id": "critsaddons",
   "version": "${version}",
-  "name": "untitled",
-  "description": "",
+  "name": "CritsAddons",
+  "description": "CritsAddons addon features for NoammAddons.",
   "authors": [],
   "contact": {},
   "license": "All-Rights-Reserved",
-  "icon": "assets/untitled/icon.png",
+  "icon": "assets/critsaddons/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": [
       {
-        "value": "com.github.noamm9.untitled.Untitled",
+        "value": "com.github.noamm9.critsaddons.CritsAddons",
         "adapter": "kotlin"
       }
     ]
   },
   "mixins": [
-    "untitled.mixins.json"
+    "critsaddons.mixins.json"
   ],
   "depends": {
     "fabricloader": ">=${loader_version}",

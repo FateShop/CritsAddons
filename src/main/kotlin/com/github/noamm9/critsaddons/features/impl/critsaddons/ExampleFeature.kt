@@ -1,4 +1,4 @@
-package com.github.noamm9.untitled.features.impl.untitled
+package com.github.noamm9.critsaddons.features.impl.critsaddons
 
 import com.github.noamm9.event.impl.TickEvent
 import com.github.noamm9.features.Feature
@@ -18,7 +18,7 @@ import java.awt.Color
 /**
  * Example Feature: Auto Sprint
  *
- * Category: Automatically set as 'UNTITLED' from the package name 'impl.untitled'.
+ * Category: Automatically set as 'CRITS_ADDONS' from the package name 'impl.critsaddons'.
  * Name: Automatically set as "Example Feature" from the object name 'ExampleFeature'.
  */
 object ExampleFeature : Feature(

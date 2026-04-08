@@ -1,4 +1,4 @@
-package com.github.noamm9.untitled.mixins;
+package com.github.noamm9.critsaddons.mixins;
 
 import com.github.noamm9.NoammAddons;
 import com.github.noamm9.ui.clickgui.CategoryType;
@@ -18,7 +18,7 @@ import java.util.Arrays;
 
 /**
     Mixins to add a category to the config gui
-    String enumName = "UNTITLED";
+    String enumName = "CRITS_ADDONS";
  */
 @Mixin(CategoryType.class)
 public class MixinCategoryType {
@@ -33,7 +33,7 @@ public class MixinCategoryType {
             unsafeField.setAccessible(true);
             Unsafe unsafe = (Unsafe) unsafeField.get(null);
 
-            String enumName = "UNTITLED";
+            String enumName = "CRITS_ADDONS";
             ArrayList<CategoryType> valuesList = new ArrayList<>(Arrays.asList($VALUES));
             int newOrdinal = valuesList.size();
 
@@ -60,7 +60,7 @@ public class MixinCategoryType {
             unsafe.putObject(base, offset, newEntries);
 
         } catch (Exception e) {
-            NoammAddons.INSTANCE.getLogger().error("Error while adding custom category type", e);
+            NoammAddons.INSTANCE.logger.error("Error while adding custom category type", e);
             e.printStackTrace();
         }
     }
