@@ -22,14 +22,14 @@ Current features include:
 
 1. Install **[Fabric for Minecraft 1.21.10](https://fabricmc.net/use/installer/)**
 2. Install **[Fabric API](https://modrinth.com/mod/fabric-api)** and **[Fabric Language Kotlin](https://modrinth.com/mod/fabric-language-kotlin)**
-3. Install **NoammAddons** for Minecraft `1.21.10`
-4. Download the latest **CritsAddons** `.jar` from the [**Releases page**](https://github.com/Noamm9/CritsAddons/releases)
+3. Install **NoammAddons** for Minecraft `1.21.10`[**Releases page**](https://github.com/Noamm9/NoammAddons/releases)
+4. Download the latest **CritsAddons** `.jar` from the [**Releases page**](https://github.com/fateshop/CritsAddons/releases)
 5. Put both `.jar` files into your `.minecraft/mods` folder
 6. Launch Minecraft using the **Fabric** profile
 
 * Keep **NoammAddons** installed. CritsAddons depends on it and will not work by itself.
 * Most settings are available through the NoammAddons config UI.
-* The latest downloadable builds are available on the [**Releases page**](https://github.com/Noamm9/CritsAddons/releases).
+* The latest downloadable builds are available on the [**Releases page**](https://github.com/fateshop/CritsAddons/releases).
 
 ----
 
@@ -41,8 +41,6 @@ CritsAddons currently includes:
 * **Party HUD**
 * **Secret Routes**
 * **Persistent secret heads** for easier route recording
-
-More addon-specific features can be added over time without modifying the main NoammAddons repo directly.
 
 ----
 
