@@ -44,6 +44,57 @@ CritsAddons currently includes:
 
 ----
 
+## Secret Routes Commands
+
+Use `/nsr` in a scanned dungeon room:
+
+* `/nsr`  
+  Start recording the main route for the current room.
+* `/nsr save`  
+  Save the current recording.
+* `/nsr cancel`  
+  Cancel the current recording without saving.
+* `/nsr delete`  
+  Delete the saved route for the room you are currently in.
+* `/nsr start`  
+  Start recording an alternate start path for a room that already has a main route.
+* `/nsr wait`  
+  Insert a wait-for-secret-progress step into the active recording.
+* `/nsr bat`  
+  Insert a wait-for-bat-spawn step into the active recording.
+* `/nsr kill`  
+  Temporarily pauses recording, uses Hyperion on the ground, then resumes recording.
+
+Playback:
+
+* Playback is started with the **Secret Routes Playback Keybind**.
+* If enabled in settings, standing in the center on a valid start block can auto-start playback (Ether warp to start block).
+
+----
+
+## Dependency Update Automation
+
+If NoammAddons updates, you can update this project in one command instead of editing `gradle.properties` manually.
+
+Commands:
+
+* Manual set:  
+  `gradle setNoammAddonsVersion -PnoammVersion=<hash-or-tag>`
+* Auto-sync latest commit from upstream branch:  
+  `gradle syncNoammAddonsVersion`
+
+Optional overrides for auto-sync:
+
+* `-PnoammBranch=<branch>` (defaults to `noammaddons_type`, usually `cheat`)
+* `-PnoammShaLength=<7-40>` (default `10`)
+* `-PnoammRepoOwner=<owner>` and `-PnoammRepoName=<repo>` (defaults: `Noamm9`, `NoammAddons`)
+
+Example:
+
+`gradle syncNoammAddonsVersion -PnoammBranch=cheat && gradle build`
+
+----
+
 ## Contributions
 
 Contributions are welcome. If you want to add a feature, port an existing one, or fix a bug, feel free to open an issue or submit a pull request.

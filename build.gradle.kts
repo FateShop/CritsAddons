@@ -6,6 +6,8 @@ import org.gradle.kotlin.dsl.modImplementation
 import org.gradle.kotlin.dsl.modRuntimeOnly
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import java.net.HttpURLConnection
+import java.net.URI
 
 plugins {
     kotlin("jvm") version "2.3.10"
@@ -19,6 +21,25 @@ group = project.property("maven_group") as String
 
 base {
     archivesName.set(project.property("archives_base_name") as String)
+}
+
+fun updateGradleProperty(key: String, value: String) {
+    val propsFile = rootProject.file("gradle.properties")
+    val lines = propsFile.readLines().toMutableList()
+    var updated = false
+
+    for (i in lines.indices) {
+        val raw = lines[i]
+        val trimmed = raw.trimStart()
+        if (trimmed.startsWith("$key=") || trimmed.startsWith("$key =")) {
+            lines[i] = "$key=$value"
+            updated = true
+            break
+        }
+    }
+
+    if (!updated) lines.add("$key=$value")
+    propsFile.writeText(lines.joinToString(System.lineSeparator()) + System.lineSeparator())
 }
 
 val targetJavaVersion = 21
@@ -48,6 +69,66 @@ dependencies {
     include("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     modImplementation("com.github.Noamm9.NoammAddons:${project.property("noammaddons_type")}:${project.property("noammaddons_version")}")
+}
+
+tasks.register("setNoammAddonsVersion") {
+    group = "automation"
+    description = "Updates noammaddons_version in gradle.properties. Usage: gradle setNoammAddonsVersion -PnoammVersion=<hash-or-tag>"
+
+    doLast {
+        val noammVersion = (findProperty("noammVersion") as String?)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: error("Missing -PnoammVersion. Example: gradle setNoammAddonsVersion -PnoammVersion=8afcda8279")
+
+        updateGradleProperty("noammaddons_version", noammVersion)
+        logger.lifecycle("Updated noammaddons_version=$noammVersion in gradle.properties")
+    }
+}
+
+tasks.register("syncNoammAddonsVersion") {
+    group = "automation"
+    description = "Fetches latest commit SHA for NoammAddons branch (defaults to noammaddons_type) and updates noammaddons_version."
+
+    doLast {
+        val owner = (findProperty("noammRepoOwner") as String?)?.trim().orEmpty().ifBlank { "Noamm9" }
+        val repo = (findProperty("noammRepoName") as String?)?.trim().orEmpty().ifBlank { "NoammAddons" }
+        val branch = (findProperty("noammBranch") as String?)?.trim().orEmpty().ifBlank {
+            (findProperty("noammaddons_type") as String).trim()
+        }
+        val shaLength = (findProperty("noammShaLength") as String?)?.toIntOrNull() ?: 10
+
+        val apiUrl = URI("https://api.github.com/repos/$owner/$repo/commits/$branch").toURL()
+        val connection = (apiUrl.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "CritsAddons-Gradle")
+            connectTimeout = 10_000
+            readTimeout = 10_000
+        }
+
+        val response = runCatching {
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            code to body
+        }.getOrElse { error("Failed requesting GitHub API: ${it.message}") }
+
+        val (statusCode, body) = response
+        if (statusCode !in 200..299) {
+            error("GitHub API request failed ($statusCode): $body")
+        }
+
+        val sha = Regex("\"sha\"\\s*:\\s*\"([0-9a-f]{40})\"")
+            .find(body)
+            ?.groupValues
+            ?.get(1)
+            ?: error("Could not parse commit SHA from GitHub response.")
+
+        val finalVersion = sha.take(shaLength.coerceIn(7, 40))
+        updateGradleProperty("noammaddons_version", finalVersion)
+        logger.lifecycle("Updated noammaddons_version=$finalVersion from $owner/$repo branch '$branch'")
+    }
 }
 
 tasks.processResources {

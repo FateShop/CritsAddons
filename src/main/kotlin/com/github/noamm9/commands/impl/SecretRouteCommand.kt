@@ -24,9 +24,26 @@ object SecretRouteCommand: BaseCommand("nsr") {
             }
         }
 
+        literal("start") {
+            literal("delete") {
+                runs {
+                    SecretRoutes.deleteStartLinkFromCurrentBlock()
+                }
+            }
+            runs {
+                SecretRoutes.startStartPathRecording()
+            }
+        }
+
         literal("bat") {
             runs {
                 SecretRoutes.insertBatWaitStep()
+            }
+        }
+
+        literal("kill") {
+            runs {
+                SecretRoutes.killDuringRecording()
             }
         }
 
