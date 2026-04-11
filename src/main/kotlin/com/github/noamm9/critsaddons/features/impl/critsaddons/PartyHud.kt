@@ -223,11 +223,28 @@ object PartyHud: Feature(
             if (!showInDungeons.value) return emptyList()
 
             if (DungeonListener.dungeonTeammates.isNotEmpty()) {
-                return DungeonListener.dungeonTeammates
+                val liveSelf = DungeonListener.thePlayer
+                val members = DungeonListener.dungeonTeammates
                     .asSequence()
-                    .filter { includeSelf.value || it.name != selfName }
-                    .map { PartyHudMember(it.name, it.clazz, it.clazzLvl) }
+                    .map { teammate ->
+                        val isSelf = selfName != null && teammate.name.equals(selfName, ignoreCase = true)
+                        if (isSelf && liveSelf != null) {
+                            PartyHudMember(teammate.name, liveSelf.clazz, liveSelf.clazzLvl)
+                        } else {
+                            PartyHudMember(teammate.name, teammate.clazz, teammate.clazzLvl)
+                        }
+                    }
+                    .filter { includeSelf.value || selfName == null || !it.name.equals(selfName, ignoreCase = true) }
                     .toList()
+
+                if (includeSelf.value && selfName != null && liveSelf != null) {
+                    val hasSelf = members.any { it.name.equals(selfName, ignoreCase = true) }
+                    if (!hasSelf) {
+                        return members + PartyHudMember(selfName, liveSelf.clazz, liveSelf.clazzLvl)
+                    }
+                }
+
+                return members
             }
         }
 
