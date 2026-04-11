@@ -1,4 +1,4 @@
-package com.github.noamm9.critsaddons.features.impl.critsaddons.waypoints
+package com.github.noamm9.critsaddons.features.impl.critsaddons
 
 import com.github.noamm9.NoammAddons
 import com.github.noamm9.NoammAddons.MOD_NAME
@@ -21,7 +21,7 @@ import com.github.noamm9.ui.clickgui.components.section
 import com.github.noamm9.ui.clickgui.components.showIf
 import com.github.noamm9.ui.clickgui.components.withDescription
 import com.github.noamm9.utils.ActionBarParser
-import com.github.noamm9.utils.BlockAimUtils
+import com.github.noamm9.critsaddons.utils.BlockAimUtils
 import com.github.noamm9.utils.ChatUtils
 import com.github.noamm9.utils.JsonUtils
 import com.github.noamm9.utils.MathUtils

@@ -1,7 +1,8 @@
-package com.github.noamm9.utils
+package com.github.noamm9.critsaddons.utils
 
 import com.github.noamm9.NoammAddons.mc
 import com.github.noamm9.ui.utils.Animation.Companion.easeInOutCubic
+import com.github.noamm9.utils.MathUtils
 import com.github.noamm9.utils.MathUtils.calcYawPitch
 import com.github.noamm9.utils.MathUtils.interpolateYaw
 import com.github.noamm9.utils.MathUtils.lerp

@@ -1,8 +1,8 @@
-package com.github.noamm9.commands.impl
+package com.github.noamm9.critsaddons.commands.impl
 
 import com.github.noamm9.commands.BaseCommand
 import com.github.noamm9.commands.CommandNodeBuilder
-import com.github.noamm9.critsaddons.features.impl.critsaddons.waypoints.SecretRoutes
+import com.github.noamm9.critsaddons.features.impl.critsaddons.SecretRoutes
 
 object SecretRouteCommand: BaseCommand("nsr") {
     override fun CommandNodeBuilder.build() {
