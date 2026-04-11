@@ -9,14 +9,6 @@
   "license": "All-Rights-Reserved",
   "icon": "assets/critsaddons/icon.png",
   "environment": "client",
-  "entrypoints": {
-    "client": [
-      {
-        "value": "com.github.noamm9.critsaddons.CritsAddons",
-        "adapter": "kotlin"
-      }
-    ]
-  },
   "mixins": [
     "critsaddons.mixins.json"
   ],
