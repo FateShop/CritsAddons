@@ -12,9 +12,11 @@ import com.github.noamm9.event.impl.TickEvent
 import com.github.noamm9.event.impl.WorldChangeEvent
 import com.github.noamm9.features.Feature
 import com.github.noamm9.ui.clickgui.components.getValue
+import com.github.noamm9.ui.clickgui.components.impl.ButtonSetting
 import com.github.noamm9.ui.clickgui.components.impl.ColorSetting
 import com.github.noamm9.ui.clickgui.components.impl.KeybindSetting
 import com.github.noamm9.ui.clickgui.components.impl.SliderSetting
+import com.github.noamm9.ui.clickgui.components.impl.TextInputSetting
 import com.github.noamm9.ui.clickgui.components.impl.ToggleSetting
 import com.github.noamm9.ui.clickgui.components.provideDelegate
 import com.github.noamm9.ui.clickgui.components.section
@@ -75,6 +77,7 @@ object SecretRoutes : Feature(
     private const val RENDER_SECTION = "render"
     private const val SAFETY_SECTION = "safety"
     private const val COSTS_SECTION = "costs"
+    private const val CONFIG_SECTION = "config"
 
     private val playbackKeybind by KeybindSetting("Playback Keybind").section(KEYBINDS_SECTION)
     private val rotationTimeMs by SliderSetting("Rotation Time (ms)", 170, 5, 500, 5)
@@ -121,7 +124,13 @@ object SecretRoutes : Feature(
     private val lowEhpMissingThreshold by SliderSetting("Hyperion Heal Missing EHP %", 65, 1, 100, 1).showIf { autoHyperionOnLowEhp.value }
     private val etherwarpManaCost by SliderSetting("Etherwarp Mana Required", 100, 0, 500, 5).section(COSTS_SECTION)
     private val hyperionManaCost by SliderSetting("Hyperion Mana Required", 300, 0, 1000, 5)
-    private val configFile = File("config/$MOD_NAME/secretRoutes.json")
+    private val routesConfigFileName by TextInputSetting("Routes Config File", "secretRoutes.json")
+        .section(CONFIG_SECTION)
+        .withDescription("JSON file name inside config/$MOD_NAME to use for Secret Routes.")
+    private val reloadRoutesConfigButton by ButtonSetting("Reload Routes File") {
+        reloadRoutesConfigFromDisk()
+    }.section(CONFIG_SECTION)
+        .withDescription("Reloads routes from the selected routes file (for manual JSON edits).")
 
     private enum class RouteStepType {
         ETHERWARP,
@@ -203,11 +212,13 @@ object SecretRoutes : Feature(
     private var centerHoldBlock: BlockPos? = null
     private var centerHoldStartedAt = 0L
     private var recordingPaused = false
+    private var activeRoutesConfigPath: String? = null
 
     override fun init() {
         loadConfig()
 
         register<TickEvent.Start> {
+            syncSelectedConfigFileIfChanged()
             if (playbackJob?.isActive == true) {
                 if (mc.screen != null) releaseMovement()
                 return@register
@@ -539,31 +550,78 @@ object SecretRoutes : Feature(
         }
     }
 
-    private fun loadConfig() {
-        if (!configFile.exists()) return
+    private fun normalizeRoutesConfigName(raw: String): String {
+        val base = raw.trim()
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .ifBlank { "secretRoutes.json" }
+        return if (base.lowercase().endsWith(".json")) base else "$base.json"
+    }
 
-        runCatching {
-            FileReader(configFile).use { reader ->
-                val type = object : TypeToken<MutableMap<String, RoomRoute>>() {}.type
-                val loaded = JsonUtils.gsonBuilder.fromJson<MutableMap<String, RoomRoute>>(reader, type) ?: return@use
-                routes.clear()
-                routes.putAll(loaded)
-                NoammAddons.logger.info("${this.javaClass.simpleName} Config loaded: ${routes.size} rooms.")
-            }
-        }.onFailure {
-            NoammAddons.logger.error("${this.javaClass.simpleName} Failed to load config!", it)
+    private fun selectedRoutesConfigFile(): File {
+        val name = normalizeRoutesConfigName(routesConfigFileName.value)
+        return File("config/$MOD_NAME/$name")
+    }
+
+    private fun syncSelectedConfigFileIfChanged() {
+        val selectedPath = selectedRoutesConfigFile().absolutePath
+        val activePath = activeRoutesConfigPath ?: return
+        if (activePath == selectedPath) return
+        if (recording != null || startLinkRecording != null || playbackJob?.isActive == true) return
+        reloadRoutesConfigFromDisk()
+    }
+
+    private fun reloadRoutesConfigFromDisk() {
+        if (recording != null || startLinkRecording != null || playbackJob?.isActive == true) {
+            ChatUtils.modMessage("&eStop recording/playback before reloading routes config.")
+            return
+        }
+
+        val file = selectedRoutesConfigFile()
+        val loaded = loadConfig()
+        clearSecretProgressCache()
+
+        if (loaded) {
+            ChatUtils.modMessage("&aReloaded Secret Routes from &e${file.name}&a (${routes.size} rooms).")
+        } else {
+            ChatUtils.modMessage("&eNo routes file found at &b${file.path}&e. Loaded empty routes.")
         }
     }
 
-    private fun saveConfig() {
+    private fun loadConfig(): Boolean {
+        val file = selectedRoutesConfigFile()
+        routes.clear()
+        activeRoutesConfigPath = file.absolutePath
+
+        if (!file.exists()) return false
+
+        var loadedAny = false
         runCatching {
-            configFile.parentFile?.mkdirs()
-            FileWriter(configFile).use { writer ->
+            FileReader(file).use { reader ->
+                val type = object : TypeToken<MutableMap<String, RoomRoute>>() {}.type
+                val loaded = JsonUtils.gsonBuilder.fromJson<MutableMap<String, RoomRoute>>(reader, type) ?: mutableMapOf()
+                routes.putAll(loaded)
+                loadedAny = true
+                NoammAddons.logger.info("${this.javaClass.simpleName} Config loaded from ${file.path}: ${routes.size} rooms.")
+            }
+        }.onFailure {
+            NoammAddons.logger.error("${this.javaClass.simpleName} Failed to load config from ${file.path}!", it)
+        }
+
+        return loadedAny
+    }
+
+    private fun saveConfig() {
+        val file = selectedRoutesConfigFile()
+        runCatching {
+            file.parentFile?.mkdirs()
+            FileWriter(file).use { writer ->
                 JsonUtils.gsonBuilder.toJson(routes, writer)
             }
-            NoammAddons.logger.info("${this.javaClass.simpleName} Config saved.")
+            activeRoutesConfigPath = file.absolutePath
+            NoammAddons.logger.info("${this.javaClass.simpleName} Config saved to ${file.path}.")
         }.onFailure {
-            NoammAddons.logger.error("${this.javaClass.simpleName} Failed to save config!", it)
+            NoammAddons.logger.error("${this.javaClass.simpleName} Failed to save config to ${file.path}!", it)
         }
     }
 

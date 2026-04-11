@@ -1,9 +1,12 @@
 package com.github.noamm9.critsaddons.features.impl.critsaddons
 
 import com.github.noamm9.NoammAddons
+import com.github.noamm9.event.impl.ChatMessageEvent
 import com.github.noamm9.event.impl.MouseClickEvent
+import com.github.noamm9.event.impl.WorldChangeEvent
 import com.github.noamm9.features.Feature
 import com.github.noamm9.ui.clickgui.components.getValue
+import com.github.noamm9.ui.clickgui.components.impl.ButtonSetting
 import com.github.noamm9.ui.clickgui.components.impl.ColorSetting
 import com.github.noamm9.ui.clickgui.components.impl.DropdownSetting
 import com.github.noamm9.ui.clickgui.components.impl.SliderSetting
@@ -76,6 +79,15 @@ object PartyHud: Feature(
     name = "Party HUD",
     description = "Displays party dungeon stats including class, cata, secrets, and PB."
 ) {
+    private val partyHeaderRegex = Regex("^Party Members \\(\\d+\\)\$")
+    private val partyRoleLineRegex = Regex("^Party (Leader|Moderators|Members):\\s*(.+)\$")
+    private val joinedPartyRegex = Regex("^([A-Za-z0-9_]{3,16}) joined the party\\.\$")
+    private val leftPartyRegex = Regex("^([A-Za-z0-9_]{3,16}) left the party\\.\$")
+    private val removedPartyRegex = Regex("^([A-Za-z0-9_]{3,16}) (?:was removed from|has been removed from) the party.*\$")
+    private val ignRegex = Regex("[A-Za-z0-9_]{3,16}")
+    private val FORCE_REFRESH_WINDOW_MS = 20_000L
+    private val PARTY_SNAPSHOT_STALE_MS = 10 * 60 * 1000L
+
     private data class KickButtonHitbox(
         val playerName: String,
         val x: Float,
@@ -86,9 +98,14 @@ object PartyHud: Feature(
 
     private val kickButtonHitboxes = mutableListOf<KickButtonHitbox>()
     private val pendingProfiles = ConcurrentHashMap<String, Deferred<Result<JsonObject>>>()
+    private val profileOverrides = ConcurrentHashMap<String, JsonObject>()
     private val kickColumnWidth = 8f
     private val horizontalPadding = 4f
     private val verticalPadding = 3f
+    private val manualPartyMembers = LinkedHashSet<String>()
+    private var manualPartyLeader: String? = null
+    private var manualSnapshotUpdatedAt = 0L
+    private var forceProfileRefreshUntil = 0L
 
     private val showInDungeons by ToggleSetting("Show In Dungeons", true)
         .withDescription("Allows Party HUD to render while you are inside dungeons.")
@@ -100,6 +117,9 @@ object PartyHud: Feature(
         .showIf { showOutsideDungeons.value }
     private val includeSelf by ToggleSetting("Include Self", true)
         .withDescription("Includes your own player row in the Party HUD.")
+    private val clearCacheButton by ButtonSetting("Clear Cache") {
+        clearHudCaches(notify = true)
+    }.withDescription("Clears Party HUD member snapshot and profile fetch cache, then forces a live refetch.")
 
     private val showClassName by ToggleSetting("Class", true)
         .withDescription("Displays the dungeon class name.")
@@ -219,7 +239,7 @@ object PartyHud: Feature(
         }
 
         val orderedMembers = LinkedHashSet<String>()
-        PartyUtils.members.forEach(orderedMembers::add)
+        resolvedPartyMembers().forEach(orderedMembers::add)
         if (includeSelf.value) {
             selfName?.let(orderedMembers::add)
         }
@@ -238,6 +258,11 @@ object PartyHud: Feature(
     )
 
     override fun init() {
+        register<ChatMessageEvent> {
+            val message = event.unformattedText.removeFormatting().trim()
+            if (message.isNotEmpty()) handlePartyChatLine(message)
+        }
+
         register<MouseClickEvent> {
             if (event.button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return@register
             if (event.action != GLFW.GLFW_PRESS) return@register
@@ -255,9 +280,17 @@ object PartyHud: Feature(
             ChatUtils.sendCommand("party kick ${hitbox.playerName}")
             event.isCanceled = true
         }
+
+        register<WorldChangeEvent> {
+            manualPartyMembers.clear()
+            manualPartyLeader = null
+            manualSnapshotUpdatedAt = 0L
+        }
     }
 
     override fun onDisable() {
+        pendingProfiles.clear()
+        profileOverrides.clear()
         kickButtonHitboxes.clear()
         super.onDisable()
     }
@@ -274,10 +307,16 @@ object PartyHud: Feature(
     }
 
     private fun getSummaryOrRequest(playerName: String, floor: Int? = null, masterMode: Boolean = false): PartyHudProfileSummary? {
-        return getCachedSummary(playerName, floor, masterMode) ?: run {
-            requestProfile(playerName)
-            null
+        val key = cacheKey(playerName)
+        val forceNetwork = shouldForceProfileRefresh()
+
+        if (!forceNetwork) {
+            getCachedSummary(playerName, floor, masterMode)?.let { return it }
         }
+
+        profileOverrides[key]?.let { return summarize(it, floor, masterMode) }
+        requestProfile(playerName, forceNetwork = forceNetwork)
+        return null
     }
 
     private fun getCachedSummary(playerName: String, floor: Int? = null, masterMode: Boolean = false): PartyHudProfileSummary? {
@@ -286,22 +325,108 @@ object PartyHud: Feature(
         return summarize(profile, floor, masterMode)
     }
 
-    private fun requestProfile(playerName: String): Deferred<Result<JsonObject>> {
+    private fun requestProfile(playerName: String, forceNetwork: Boolean = false): Deferred<Result<JsonObject>> {
         val cleanName = cleanName(playerName)
         val key = cleanName.lowercase()
 
-        ProfileCache.getFromCache(key)?.let { return CompletableDeferred(Result.success(it)) }
+        if (!forceNetwork) {
+            ProfileCache.getFromCache(key)?.let { return CompletableDeferred(Result.success(it)) }
+        }
 
         return pendingProfiles.computeIfAbsent(key) {
             NoammAddons.scope.async {
                 try {
-                    ProfileUtils.getProfile(cleanName)
+                    ProfileUtils.getProfile(cleanName).also { result ->
+                        result.getOrNull()?.let { profileOverrides[key] = it }
+                    }
                 }
                 finally {
                     pendingProfiles.remove(key)
                 }
             }
         }
+    }
+
+    private fun resolvedPartyMembers(): List<String> {
+        val now = System.currentTimeMillis()
+        val manualFresh = manualPartyMembers.isNotEmpty() && now - manualSnapshotUpdatedAt <= PARTY_SNAPSHOT_STALE_MS
+        return if (manualFresh) manualPartyMembers.toList() else PartyUtils.members
+    }
+
+    private fun shouldForceProfileRefresh(): Boolean {
+        return System.currentTimeMillis() < forceProfileRefreshUntil
+    }
+
+    private fun clearHudCaches(notify: Boolean) {
+        pendingProfiles.clear()
+        profileOverrides.clear()
+        manualPartyMembers.clear()
+        manualPartyLeader = null
+        manualSnapshotUpdatedAt = 0L
+        forceProfileRefreshUntil = System.currentTimeMillis() + FORCE_REFRESH_WINDOW_MS
+        if (notify) {
+            ChatUtils.modMessage("&aParty HUD cache cleared. Live profile refetch forced for ${FORCE_REFRESH_WINDOW_MS / 1000}s.")
+        }
+    }
+
+    private fun handlePartyChatLine(message: String) {
+        when {
+            message == "You are not currently in a party." ||
+                message == "You left the party." ||
+                message.startsWith("You have been kicked from the party") ||
+                message.startsWith("The party was disbanded") -> {
+                manualPartyMembers.clear()
+                manualPartyLeader = null
+                manualSnapshotUpdatedAt = System.currentTimeMillis()
+                return
+            }
+
+            partyHeaderRegex.matches(message) -> {
+                manualPartyMembers.clear()
+                manualPartyLeader = null
+                manualSnapshotUpdatedAt = System.currentTimeMillis()
+                return
+            }
+        }
+
+        partyRoleLineRegex.matchEntire(message)?.let { match ->
+            val role = match.groupValues[1]
+            val names = extractNamesFromPartyLine(match.groupValues[2])
+            if (names.isNotEmpty()) {
+                manualPartyMembers.addAll(names)
+                if (role == "Leader") manualPartyLeader = names.first()
+                manualSnapshotUpdatedAt = System.currentTimeMillis()
+            }
+            return
+        }
+
+        joinedPartyRegex.matchEntire(message)?.groupValues?.getOrNull(1)?.let { joined ->
+            manualPartyMembers.add(joined)
+            manualSnapshotUpdatedAt = System.currentTimeMillis()
+            return
+        }
+
+        leftPartyRegex.matchEntire(message)?.groupValues?.getOrNull(1)?.let { left ->
+            manualPartyMembers.removeAll { it.equals(left, ignoreCase = true) }
+            if (manualPartyLeader.equals(left, ignoreCase = true)) manualPartyLeader = null
+            manualSnapshotUpdatedAt = System.currentTimeMillis()
+            return
+        }
+
+        removedPartyRegex.matchEntire(message)?.groupValues?.getOrNull(1)?.let { removed ->
+            manualPartyMembers.removeAll { it.equals(removed, ignoreCase = true) }
+            if (manualPartyLeader.equals(removed, ignoreCase = true)) manualPartyLeader = null
+            manualSnapshotUpdatedAt = System.currentTimeMillis()
+            return
+        }
+    }
+
+    private fun extractNamesFromPartyLine(line: String): List<String> {
+        return line.split('●')
+            .mapNotNull { segment ->
+                ignRegex.findAll(segment).lastOrNull()?.value
+            }
+            .distinctBy { it.lowercase() }
     }
 
     private fun summarize(profile: JsonObject, floor: Int? = null, masterMode: Boolean = false): PartyHudProfileSummary {
