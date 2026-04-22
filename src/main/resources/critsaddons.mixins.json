@@ -8,10 +8,8 @@
   ],
   "client": [
     "MixinGameRendererZoom",
-    "MixinLivingEntityRendererBetterGlow",
     "MixinMinecraft",
-    "MixinMouseHandlerZoom",
-    "MixinPostPassBetterGlow"
+    "MixinMouseHandlerZoom"
   ],
   "injectors": {
     "defaultRequire": 1
