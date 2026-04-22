@@ -18,6 +18,18 @@ object SecretRouteCommand: BaseCommand("nsr") {
             }
         }
 
+        literal("continue") {
+            runs {
+                SecretRoutes.continueRecording()
+            }
+        }
+
+        literal("complete") {
+            runs {
+                SecretRoutes.markCurrentRoomCompleted()
+            }
+        }
+
         literal("wait") {
             runs {
                 SecretRoutes.insertWaitStep()
@@ -44,6 +56,52 @@ object SecretRouteCommand: BaseCommand("nsr") {
         literal("kill") {
             runs {
                 SecretRoutes.killDuringRecording()
+            }
+        }
+
+        literal("add") {
+            literal("ew") {
+                runs { SecretRoutes.addEtherwarpStep() }
+            }
+            literal("etherwarp") {
+                runs { SecretRoutes.addEtherwarpStep() }
+            }
+            literal("tnt") {
+                runs { SecretRoutes.addTntStep() }
+            }
+            literal("break") {
+                runs { SecretRoutes.addBreakStep() }
+            }
+            literal("hyp") {
+                runs { SecretRoutes.addHyperionStep() }
+            }
+            literal("hyperion") {
+                runs { SecretRoutes.addHyperionStep() }
+            }
+            literal("secret") {
+                runs { SecretRoutes.addSecretStep() }
+            }
+            literal("wait") {
+                runs { SecretRoutes.insertWaitStep() }
+            }
+            literal("bat") {
+                runs { SecretRoutes.insertBatWaitStep() }
+            }
+        }
+
+        literal("end") {
+            literal("delete") {
+                runs {
+                    SecretRoutes.deleteEndLinkFromCurrentBlock()
+                }
+            }
+            literal("helper") {
+                runs {
+                    SecretRoutes.addEndHelperBlockFromCurrentBlock()
+                }
+            }
+            runs {
+                SecretRoutes.addEndBlockFromCurrentBlock()
             }
         }
 

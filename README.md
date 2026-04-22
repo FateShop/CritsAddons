@@ -20,13 +20,24 @@ NoammAddons is required. CritsAddons does not run standalone.
 
 ## Features
 
-- Party Finder additions
-- Party HUD
-- Secret Routes
-- Secret Routes Debugger
-- Persistent Secret Heads
-- Zoom
-- Auto LCM
+- **Party Finder**  
+  Adds Party Finder overlays, tooltip stats, and optional auto-kick requirements (class/SPR/secrets/PB).
+- **Party HUD**  
+  Displays party members with class, class level, cata, secrets stats, and PB, with live party chat syncing and cache clear.
+- **Secret Routes**  
+  Records/replays room routes with Etherwarp/TNT/Break/Hyperion/secret/wait/bat steps, start links, end links/helpers, auto-start, and step resume.
+- **NSR Helper**  
+  Shows route completeness helpers (door coverage, same start/end checks) with HUD + missing block rendering.
+- **NSR Completed**  
+  Tracks completed rooms and renders a HUD sorted as **Yellow (in current run, incomplete)**, **Green (completed)**, **Red (incomplete)**.
+- **Secret Routes Debugger**  
+  Channel-based debug logs for route planning/playback/packet/etherwarp/mana/wait/recording.
+- **Persistent Secret Heads**  
+  Keeps specific clicked secret heads visible as ghost targets for easier route recording.
+- **Zoom**  
+  Keybind zoom with mouse-wheel zoom adjustment and optional smoothed camera turning.
+- **Auto LCM**  
+  While holding left click as Mage in dungeons, auto-clicks with configurable random tick delay.
 
 ## Secret Routes Commands
 
@@ -34,22 +45,46 @@ Use commands while inside a scanned dungeon room.
 
 - `/nsr`  
   Start recording the main route (requires standing centered on the start block).
+- `/nsr continue`  
+  Continue recording from the existing saved route in the current room (appends steps to the current route).
 - `/nsr save`  
-  Save the active main route recording.
+  Save the active route recording.
 - `/nsr cancel`  
-  Cancel active `/nsr` or `/nsr start` recording.
+  Cancel active `/nsr`, `/nsr start`, or `/nsr end` recording.
 - `/nsr delete`  
   Delete the room's saved route.
+- `/nsr complete`  
+  Mark the current room as completed for **NSR Completed** tracking.
 - `/nsr start`  
   Start one-link start recording (requires centered block position). Do exactly one Etherwarp from your current start block to an existing known start block. It auto-saves after a valid link.
 - `/nsr start delete`  
   While centered on a non-original start block, delete that start link and dependent links that route through it.
+- `/nsr end`  
+  Start one-link end recording from your current known end/end-helper block to a final end block (auto-saves after one valid Etherwarp).
+- `/nsr end helper`  
+  Start one-link recording from your current known end/end-helper block to an end-helper block.
+- `/nsr end delete`  
+  While centered on a deletable end/end-helper block, delete it and dependent linked end nodes.
 - `/nsr wait`  
   Insert a wait-for-secret-progress step in the active `/nsr` recording.
 - `/nsr bat`  
   Insert a wait-for-bat-spawn step in the active `/nsr` recording.
 - `/nsr kill`  
-  Pause `/nsr` recording, right-click ground with Hyperion, then resume recording.
+  Pause recording, right-click ground with a Wither Blade (Hyperion/Astraea/Valkyrie/Scylla), then resume recording.
+- `/nsr add ew` or `/nsr add etherwarp`  
+  Add an Etherwarp step immediately.
+- `/nsr add tnt`  
+  Add a TNT placement step from the current hit result.
+- `/nsr add break`  
+  Add a break-block step from the current hit result.
+- `/nsr add hyp` or `/nsr add hyperion`  
+  Add a Hyperion step (uses any Wither Blade at playback).
+- `/nsr add secret`  
+  Add a right-click secret step from the current hit result.
+- `/nsr add wait`  
+  Add a wait-for-secret-progress step.
+- `/nsr add bat`  
+  Add a wait-for-bat-spawn step.
 
 ## Secret Routes Playback Notes
 
@@ -57,8 +92,10 @@ Use commands while inside a scanned dungeon room.
 - Auto-start supports start-block-only mode, center-only checks, center hold time, and center radius.
 - Start route from anywhere supports step resume from centered recorded step blocks.
 - Start-link chains are followed before route-step resume logic.
+- End links/helpers support post-route chaining to non-original final end blocks.
 - Routes file is selectable via `Routes Config File`.
 - `Reload Routes File` reloads the selected JSON without restarting the game.
+- `secretRoutes.json` now stores both route data and NSR completion data (`routes` + `completedRooms`).
 
 ## Party HUD Notes
 

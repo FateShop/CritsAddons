@@ -1,7 +1,6 @@
 package com.github.noamm9.critsaddons.utils
 
 import com.github.noamm9.NoammAddons.mc
-import com.github.noamm9.ui.utils.Animation.Companion.easeInOutCubic
 import com.github.noamm9.utils.MathUtils
 import com.github.noamm9.utils.MathUtils.calcYawPitch
 import com.github.noamm9.utils.MathUtils.interpolateYaw
@@ -15,6 +14,14 @@ import kotlin.math.abs
 import kotlin.math.min
 
 object BlockAimUtils {
+    private fun easeInOutCubic(progress: Double): Double {
+        return if (progress < 0.5) {
+            4.0 * progress * progress * progress
+        } else {
+            1.0 - Math.pow(-2.0 * progress + 2.0, 3.0) / 2.0
+        }
+    }
+
     fun blockCenter(pos: BlockPos, yOffset: Double = 0.5): Vec3 {
         return Vec3(pos.x + 0.5, pos.y + yOffset, pos.z + 0.5)
     }

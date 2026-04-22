@@ -36,6 +36,7 @@ import com.github.noamm9.utils.items.EtherwarpHelper
 import com.github.noamm9.utils.items.ItemUtils.skyblockId
 import com.github.noamm9.utils.location.LocationUtils
 import com.github.noamm9.utils.render.Render3D
+import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -78,6 +79,7 @@ object SecretRoutes : Feature(
     private const val SAFETY_SECTION = "safety"
     private const val COSTS_SECTION = "costs"
     private const val CONFIG_SECTION = "config"
+    private val WITHER_BLADE_ITEM_IDS = arrayOf("HYPERION", "ASTRAEA", "VALKYRIE", "SCYLLA")
 
     private val playbackKeybind by KeybindSetting("Playback Keybind").section(KEYBINDS_SECTION)
     private val rotationTimeMs by SliderSetting("Rotation Time (ms)", 170, 5, 500, 5)
@@ -104,9 +106,12 @@ object SecretRoutes : Feature(
     private val startRouteFromAnywhere by ToggleSetting("Start Route From Anywhere", false)
         .withDescription("Lets playback start from a centered recorded route step block, such as EW 18.")
     private val renderStart by ToggleSetting("Show Start Block", true).section(RENDER_SECTION)
+    private val renderEnd by ToggleSetting("Show End Blocks", true)
     private val renderThroughWalls by ToggleSetting("Render Through Walls", true)
     private val partialRoutes by ToggleSetting("Partial Routes", false).withDescription("Shows only the route up to the next cached secret for the room.")
     private val startBlockColor by ColorSetting("Start Block Color", Color(80, 220, 255, 120), true).showIf { renderStart.value }
+    private val endBlockColor by ColorSetting("End Block Color", Color(255, 210, 85, 120), true).showIf { renderEnd.value }
+    private val endHelperBlockColor by ColorSetting("End Helper Color", Color(255, 245, 140, 120), true).showIf { renderEnd.value }
     private val renderEtherwarpLines by ToggleSetting("Show Etherwarp Lines", true)
     private val etherwarpLineColor by ColorSetting("Etherwarp Line Color", Color(85, 255, 255, 180), true).showIf { renderEtherwarpLines.value }
     private val etherwarpLineWidth by SliderSetting("Etherwarp Line Width", 2.5f, 1f, 8f, 0.1f).showIf { renderEtherwarpLines.value }
@@ -159,16 +164,28 @@ object SecretRoutes : Feature(
         val pitch: Float? = null
     )
 
+    private data class EndLink(
+        val from: BlockPos,
+        val to: BlockPos,
+        val direction: Direction? = null,
+        val yaw: Float? = null,
+        val pitch: Float? = null
+    )
+
     private data class RoomRoute(
         val startBlock: BlockPos,
         val steps: MutableList<RouteStep> = mutableListOf(),
-        val startLinks: MutableList<StartLink>? = null
+        val startLinks: MutableList<StartLink>? = null,
+        val endLinks: MutableList<EndLink>? = null,
+        val endBlocks: MutableList<BlockPos>? = null,
+        val endHelperBlocks: MutableList<BlockPos>? = null
     )
 
     private data class RecordingSession(
         val roomName: String,
         val startBlock: BlockPos,
-        val steps: MutableList<RouteStep> = mutableListOf()
+        val steps: MutableList<RouteStep> = mutableListOf(),
+        val baseStepCount: Int = 0
     )
 
     private data class StartLinkRecordingSession(
@@ -176,17 +193,35 @@ object SecretRoutes : Feature(
         val sourceStart: BlockPos
     )
 
+    private enum class EndLinkRecordingType {
+        HELPER,
+        FINAL
+    }
+
+    private data class EndLinkRecordingSession(
+        val roomName: String,
+        val sourceEnd: BlockPos,
+        val type: EndLinkRecordingType
+    )
+
     private data class PlaybackPlan(
         val steps: List<RouteStep>,
         val usedAltStart: Boolean,
         val usedStartLink: Boolean = false,
         val resumedFromRouteStep: Boolean = false,
-        val resumeLabel: String? = null
+        val resumeLabel: String? = null,
+        val primaryEndBlock: BlockPos? = null
     )
 
     private data class StartChainResolution(
         val success: Boolean,
         val links: List<StartLink> = emptyList(),
+        val error: String? = null
+    )
+
+    private data class EndChainResolution(
+        val success: Boolean,
+        val links: List<EndLink> = emptyList(),
         val error: String? = null
     )
 
@@ -196,12 +231,22 @@ object SecretRoutes : Feature(
         val corner: BlockPos
     )
 
+    data class RouteHelperSnapshot(
+        val roomName: String,
+        val sameStartAndOgEnd: Boolean,
+        val startBlocksWorld: Set<BlockPos>,
+        val endNodesWorld: Set<BlockPos>,
+        val ogEndWorld: BlockPos?
+    )
+
     private val routes = mutableMapOf<String, RoomRoute>()
+    private val completedRooms = linkedSetOf<String>()
     private val completedSecretsByRoom = mutableMapOf<String, Int>()
     private val lastSecretProgressAtByRoom = mutableMapOf<String, Long>()
 
     private var recording: RecordingSession? = null
     private var startLinkRecording: StartLinkRecordingSession? = null
+    private var endLinkRecording: EndLinkRecordingSession? = null
     private var playbackJob: Job? = null
     private var activePlaybackRoomName: String? = null
     private var lastBlockedMessageAt = 0L
@@ -259,10 +304,10 @@ object SecretRoutes : Feature(
                 PersistentSecretHeads.findGhostHeadTargetForRoute()?.let { markCurrentRoomSecretClick(it) }
             }
 
-            if (isStartLinkRecordingCurrentRoom()) {
-                if (recordStartLink()) return@register
+            if (isLinkRecordingCurrentRoom()) {
+                if (recordLinkStep()) return@register
                 event.isCanceled = true
-                blockMessage("Only one etherwarp is allowed while /nsr start recording is active.")
+                blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
                 return@register
             }
 
@@ -280,10 +325,10 @@ object SecretRoutes : Feature(
                 markCurrentRoomSecretClick(event.pos)
             }
 
-            if (isStartLinkRecordingCurrentRoom()) {
-                if (recordStartLink()) return@register
+            if (isLinkRecordingCurrentRoom()) {
+                if (recordLinkStep()) return@register
                 event.isCanceled = true
-                blockMessage("Only one etherwarp is allowed while /nsr start recording is active.")
+                blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
                 return@register
             }
 
@@ -298,7 +343,7 @@ object SecretRoutes : Feature(
                     return@register
                 }
 
-                itemId == "HYPERION" -> {
+                isWitherBlade(itemId) -> {
                     appendStep(RouteStep(RouteStepType.USE_HYPERION, currentRelativePos(event.pos)))
                     return@register
                 }
@@ -312,9 +357,9 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.RIGHT_CLICK.ENTITY>(EventPriority.HIGHEST) {
-            if (isStartLinkRecordingCurrentRoom()) {
+            if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
-                blockMessage("Only one etherwarp is allowed while /nsr start recording is active.")
+                blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
                 return@register
             }
             if (!isRecordingCurrentRoom()) return@register
@@ -323,9 +368,9 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.LEFT_CLICK.AIR>(EventPriority.HIGHEST) {
-            if (isStartLinkRecordingCurrentRoom()) {
+            if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
-                blockMessage("Only one etherwarp is allowed while /nsr start recording is active.")
+                blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
                 return@register
             }
             if (!isRecordingCurrentRoom()) return@register
@@ -334,9 +379,9 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.LEFT_CLICK.ENTITY>(EventPriority.HIGHEST) {
-            if (isStartLinkRecordingCurrentRoom()) {
+            if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
-                blockMessage("Only one etherwarp is allowed while /nsr start recording is active.")
+                blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
                 return@register
             }
             if (!isRecordingCurrentRoom()) return@register
@@ -345,9 +390,9 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.LEFT_CLICK.BLOCK>(EventPriority.HIGHEST) {
-            if (isStartLinkRecordingCurrentRoom()) {
+            if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
-                blockMessage("Only one etherwarp is allowed while /nsr start recording is active.")
+                blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
                 return@register
             }
             if (!isRecordingCurrentRoom()) return@register
@@ -363,7 +408,7 @@ object SecretRoutes : Feature(
         }
 
         register<PacketEvent.Sent>(EventPriority.HIGHEST) {
-            if (isStartLinkRecordingCurrentRoom()) return@register
+            if (isLinkRecordingCurrentRoom()) return@register
             if (!isRecordingCurrentRoom()) return@register
             val packet = event.packet as? ServerboundUseItemOnPacket ?: return@register
             val held = mc.player?.mainHandItem ?: return@register
@@ -395,6 +440,12 @@ object SecretRoutes : Feature(
         }
 
         register<DungeonEvent.RoomEvent.onExit> {
+            val session = endLinkRecording ?: return@register
+            if (session.roomName != event.room.name) return@register
+            cancelRecording("Left ${event.room.name}; /nsr end recording canceled.")
+        }
+
+        register<DungeonEvent.RoomEvent.onExit> {
             if (activePlaybackRoomName != event.room.name) return@register
             stopPlayback("&eLeft ${event.room.name}; Secret Route playback canceled.")
         }
@@ -406,6 +457,7 @@ object SecretRoutes : Feature(
         register<WorldChangeEvent> {
             recording = null
             startLinkRecording = null
+            endLinkRecording = null
             lastBreakRecord = null
             lastTntRecord = null
             lastAutoStartAt = 0L
@@ -422,6 +474,7 @@ object SecretRoutes : Feature(
         val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to start /nsr.")
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
         stopPlayback()
 
         val startBlock = mc.player?.blockPosition()?.below() ?: return ChatUtils.modMessage("&cCould not resolve your starting block.")
@@ -434,10 +487,38 @@ object SecretRoutes : Feature(
         ChatUtils.modMessage("&aStarted recording Secret Route for &e${ctx.room.name}&a.")
     }
 
+    fun continueRecording() {
+        val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to use /nsr continue.")
+        if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
+        if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        stopPlayback()
+
+        val route = routes[ctx.room.name]
+            ?: return ChatUtils.modMessage("&cNo Secret Route saved for &e${ctx.room.name}&c. Record it with &b/nsr&c first.")
+        if (route.steps.isEmpty()) {
+            return ChatUtils.modMessage("&cThe current route has no steps. Use &b/nsr&c to record from scratch.")
+        }
+
+        val existingSteps = route.steps.toMutableList()
+        recording = RecordingSession(
+            roomName = ctx.room.name,
+            startBlock = route.startBlock,
+            steps = existingSteps,
+            baseStepCount = existingSteps.size
+        )
+        lastBreakRecord = null
+        lastTntRecord = null
+        ChatUtils.modMessage(
+            "&aContinuing Secret Route for &e${ctx.room.name}&a from step &e${existingSteps.size + 1}&a. Use &b/nsr save&a when done."
+        )
+    }
+
     fun startStartPathRecording() {
         val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to start /nsr start.")
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cA /nsr start recording is already active.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
         stopPlayback()
 
         val route = routes[ctx.room.name]
@@ -487,27 +568,157 @@ object SecretRoutes : Feature(
         ChatUtils.modMessage("&aDeleted &e$removedCount&a start block link${if (removedCount == 1) "" else "s"} for &e${ctx.room.name}&a.")
     }
 
+    fun deleteEndLinkFromCurrentBlock() {
+        val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to delete an end link.")
+        val route = routes[ctx.room.name]
+            ?: return ChatUtils.modMessage("&cNo Secret Route saved for &e${ctx.room.name}&c.")
+        val worldBlock = mc.player?.blockPosition()?.below() ?: return ChatUtils.modMessage("&cCould not resolve your current block.")
+        if (!isCenteredOnBlock(worldBlock)) return ChatUtils.modMessage("&cStand in the center of the block before using &b/nsr end delete&c.")
+
+        val relative = toRelative(worldBlock, ctx)
+        val routeEnd = routeEndBlockRelative(route)
+        if (routeEnd != null && relative == routeEnd) {
+            return ChatUtils.modMessage("&cYou cannot delete the original route end block.")
+        }
+
+        val endBlocks = route.endBlocks.orEmpty().toSet()
+        val helperBlocks = route.endHelperBlocks.orEmpty().toSet()
+        if (relative !in endBlocks && relative !in helperBlocks) {
+            return ChatUtils.modMessage("&cThis block is not a deletable end/end-helper block.")
+        }
+
+        val linkedRemoval = collectDependentEndNodes(route.endLinks.orEmpty(), relative)
+        val removedNodes = linkedRemoval
+            .filterNot { it == routeEnd }
+            .toSet()
+        if (removedNodes.isEmpty()) {
+            return ChatUtils.modMessage("&eNo end blocks were removed.")
+        }
+
+        val updatedLinks = route.endLinks.orEmpty()
+            .filterNot { it.from in removedNodes || it.to in removedNodes }
+            .toMutableList()
+        val updatedEnds = route.endBlocks.orEmpty()
+            .filterNot { it in removedNodes }
+            .toMutableList()
+        val updatedHelpers = route.endHelperBlocks.orEmpty()
+            .filterNot { it in removedNodes }
+            .toMutableList()
+
+        routes[ctx.room.name] = route.copy(
+            endLinks = updatedLinks,
+            endBlocks = updatedEnds,
+            endHelperBlocks = updatedHelpers
+        )
+        saveConfig()
+
+        val removedEndCount = removedNodes.count { it in endBlocks }
+        val removedHelperCount = removedNodes.count { it in helperBlocks }
+        val removedTotal = removedNodes.size
+        ChatUtils.modMessage(
+            "&aDeleted &e$removedTotal&a linked end node${if (removedTotal == 1) "" else "s"} " +
+                "(&e$removedEndCount&a end, &e$removedHelperCount&a helper) for &e${ctx.room.name}&a."
+        )
+    }
+
     fun saveRecording() {
         if (startLinkRecording != null) {
             return ChatUtils.modMessage("&e/nsr start auto-saves after one valid etherwarp. Use &b/nsr cancel&e to cancel it.")
         }
+        if (endLinkRecording != null) {
+            return ChatUtils.modMessage("&e/nsr end auto-saves after one valid etherwarp. Use &b/nsr cancel&e to cancel it.")
+        }
         val session = recording ?: return ChatUtils.modMessage("&cNo Secret Route recording is active.")
         if (session.steps.isEmpty()) return ChatUtils.modMessage("&cNo steps recorded for ${session.roomName}.")
 
-        val existingStartLinks = routes[session.roomName]?.startLinks.orEmpty().toMutableList()
-        routes[session.roomName] = RoomRoute(session.startBlock, session.steps.toMutableList(), existingStartLinks)
+        val previousRoute = routes[session.roomName]
+        val existingStartLinks = previousRoute?.startLinks.orEmpty().toMutableList()
+        val existingEndLinks = previousRoute?.endLinks.orEmpty().toMutableList()
+        val existingEndBlocks = previousRoute?.endBlocks.orEmpty().toMutableList()
+        val existingEndHelpers = previousRoute?.endHelperBlocks.orEmpty().toMutableList()
+
+        routes[session.roomName] = RoomRoute(
+            startBlock = session.startBlock,
+            steps = session.steps.toMutableList(),
+            startLinks = existingStartLinks,
+            endLinks = existingEndLinks,
+            endBlocks = existingEndBlocks,
+            endHelperBlocks = existingEndHelpers
+        )
 
         saveConfig()
+        val appendedCount = (session.steps.size - session.baseStepCount).coerceAtLeast(0)
         recording = null
         lastBreakRecord = null
         lastTntRecord = null
-        ChatUtils.modMessage("&aSaved Secret Route for &e${session.roomName}&a with &e${routes[session.roomName]?.steps?.size}&a steps.")
+        ChatUtils.modMessage(
+            "&aSaved Secret Route for &e${session.roomName}&a with &e${routes[session.roomName]?.steps?.size}&a steps" +
+                if (session.baseStepCount > 0) " (&e+$appendedCount&a appended)." else "."
+        )
+    }
+
+    fun markCurrentRoomCompleted() {
+        val ctx = currentRoomContext()
+            ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to use /nsr complete.")
+        val roomName = ctx.room.name
+
+        if (!completedRooms.add(roomName)) {
+            return ChatUtils.modMessage("&e$roomName is already marked completed.")
+        }
+
+        saveConfig()
+        ChatUtils.modMessage("&aMarked &e$roomName&a as completed in Secret Routes.")
+    }
+
+    fun getCompletedRoomNames(): Set<String> = completedRooms.toSet()
+
+    fun getTrackedCompletionRoomNames(): Set<String> {
+        val names = linkedSetOf<String>()
+        names.addAll(routes.keys)
+        names.addAll(completedRooms)
+        return names
+    }
+
+    fun isRoomMarkedCompleted(roomName: String): Boolean = completedRooms.contains(roomName)
+
+    fun addEndBlockFromCurrentBlock() {
+        startEndLinkRecording(EndLinkRecordingType.FINAL)
+    }
+
+    fun addEndHelperBlockFromCurrentBlock() {
+        startEndLinkRecording(EndLinkRecordingType.HELPER)
+    }
+
+    private fun startEndLinkRecording(type: EndLinkRecordingType) {
+        val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to start /nsr end recording.")
+        if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
+        if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cA /nsr end recording is already active.")
+        stopPlayback()
+
+        val route = routes[ctx.room.name]
+            ?: return ChatUtils.modMessage("&cNo Secret Route saved for &e${ctx.room.name}&c. Record the main route first.")
+
+        val worldBlock = mc.player?.blockPosition()?.below() ?: return ChatUtils.modMessage("&cCould not resolve your block.")
+        if (!isCenteredOnBlock(worldBlock)) {
+            return ChatUtils.modMessage("&cStand in the center of the block before starting &b/nsr end&c.")
+        }
+        val relative = toRelative(worldBlock, ctx)
+        val knownEnds = knownEndBlocksRelative(route)
+        if (!knownEnds.contains(relative)) {
+            return ChatUtils.modMessage("&cYou must stand on a known end/end-helper block before linking a new end.")
+        }
+
+        endLinkRecording = EndLinkRecordingSession(ctx.room.name, relative, type)
+        val label = if (type == EndLinkRecordingType.HELPER) "/nsr end helper" else "/nsr end"
+        ChatUtils.modMessage("&aStarted $label link recording for &e${ctx.room.name}&a. Use exactly one etherwarp.")
     }
 
     fun cancelRecording(message: String? = null) {
-        if (recording == null && startLinkRecording == null) return
+        if (recording == null && startLinkRecording == null && endLinkRecording == null) return
         recording = null
         startLinkRecording = null
+        endLinkRecording = null
         lastBreakRecord = null
         lastTntRecord = null
         ChatUtils.modMessage("&e${message ?: "Secret Route recording canceled."}")
@@ -523,6 +734,43 @@ object SecretRoutes : Feature(
         appendStep(RouteStep(RouteStepType.WAIT_FOR_BAT_SPAWN))
     }
 
+    fun addEtherwarpStep() {
+        if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first (or /nsr continue) before using /nsr add.")
+        if (recordEtherwarpStep()) return
+        ChatUtils.modMessage("&cCould not record etherwarp. Hold your etherwarp item and face a valid target block.")
+    }
+
+    fun addTntStep() {
+        if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first (or /nsr continue) before using /nsr add.")
+        if (recordTntStepFromHitResult()) return
+        ChatUtils.modMessage("&cLook at a block face with TNT in hand to add a TNT step.")
+    }
+
+    fun addBreakStep() {
+        if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first (or /nsr continue) before using /nsr add.")
+        val hit = mc.hitResult as? BlockHitResult ?: return ChatUtils.modMessage("&cLook at a block to add a break step.")
+        if (!shouldRecordBreak(hit.blockPos)) return
+        appendStep(RouteStep(RouteStepType.BREAK_BLOCK, currentRelativePos(hit.blockPos)))
+    }
+
+    fun addHyperionStep() {
+        if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first (or /nsr continue) before using /nsr add.")
+        val target = (mc.hitResult as? BlockHitResult)?.blockPos
+            ?: mc.player?.blockPosition()?.below()
+            ?: return ChatUtils.modMessage("&cCould not resolve a target block for Hyperion.")
+        appendStep(RouteStep(RouteStepType.USE_HYPERION, currentRelativePos(target)))
+    }
+
+    fun addSecretStep() {
+        if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first (or /nsr continue) before using /nsr add.")
+        val hit = mc.hitResult as? BlockHitResult ?: return ChatUtils.modMessage("&cLook at a valid secret block to add a secret step.")
+        val pos = hit.blockPos
+        if (!isRouteRightClickTarget(pos)) {
+            return ChatUtils.modMessage("&cTarget block is not a valid secret interaction block.")
+        }
+        appendStep(RouteStep(RouteStepType.RIGHT_CLICK_SECRET, currentRelativePos(pos), direction = hit.direction))
+    }
+
     fun deleteCurrentRoomRoute() {
         val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to delete its route.")
         val removed = routes.remove(ctx.room.name)
@@ -534,13 +782,13 @@ object SecretRoutes : Feature(
 
     fun killDuringRecording() {
         if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first before using /nsr kill.")
-        if (findItemSlot("HYPERION") == null) return ChatUtils.modMessage("&cHyperion is not on your hotbar.")
+        if (findItemSlot(*WITHER_BLADE_ITEM_IDS) == null) return ChatUtils.modMessage("&cHyperion is not on your hotbar.")
         val ground = mc.player?.blockPosition()?.below() ?: return ChatUtils.modMessage("&cCould not resolve your ground block.")
         SecretRoutesDebugger.recording { "/nsr kill start ground=${ground.toShortString()}." }
 
         scope.launch {
             withRecordingPaused {
-                if (!useTargetedStep(ground, null, arrayOf("HYPERION"), "Hyperion", yOffset = 0.1)) {
+                if (!useTargetedStep(ground, null, WITHER_BLADE_ITEM_IDS, "Hyperion", yOffset = 0.1)) {
                     ChatUtils.modMessage("&cFailed to use Hyperion for /nsr kill.")
                 }
                 delay(150)
@@ -548,6 +796,35 @@ object SecretRoutes : Feature(
             SecretRoutesDebugger.recording { "/nsr kill finished and recording resumed." }
             ChatUtils.modMessage("&a/nsr kill used Hyperion and resumed recording.")
         }
+    }
+
+    fun getCurrentRoomHelperSnapshot(): RouteHelperSnapshot? {
+        val ctx = currentRoomContext() ?: return null
+        val route = routes[ctx.room.name] ?: return null
+
+        val ogEndRelative = routeEndBlockRelative(route)
+        val ogEndWorld = ogEndRelative?.let { toWorld(it, ctx) }
+        val startBlocks = knownStartBlocksRelative(route)
+            .asSequence()
+            .map { toWorld(it, ctx) }
+            .toSet()
+
+        val endNodes = linkedSetOf<BlockPos>()
+        route.endHelperBlocks.orEmpty()
+            .asSequence()
+            .mapTo(endNodes) { toWorld(it, ctx) }
+        route.endBlocks.orEmpty()
+            .asSequence()
+            .mapTo(endNodes) { toWorld(it, ctx) }
+        ogEndWorld?.let(endNodes::add)
+
+        return RouteHelperSnapshot(
+            roomName = ctx.room.name,
+            sameStartAndOgEnd = route.startBlock == ogEndRelative,
+            startBlocksWorld = startBlocks,
+            endNodesWorld = endNodes,
+            ogEndWorld = ogEndWorld
+        )
     }
 
     private fun normalizeRoutesConfigName(raw: String): String {
@@ -567,12 +844,12 @@ object SecretRoutes : Feature(
         val selectedPath = selectedRoutesConfigFile().absolutePath
         val activePath = activeRoutesConfigPath ?: return
         if (activePath == selectedPath) return
-        if (recording != null || startLinkRecording != null || playbackJob?.isActive == true) return
+        if (recording != null || startLinkRecording != null || endLinkRecording != null || playbackJob?.isActive == true) return
         reloadRoutesConfigFromDisk()
     }
 
     private fun reloadRoutesConfigFromDisk() {
-        if (recording != null || startLinkRecording != null || playbackJob?.isActive == true) {
+        if (recording != null || startLinkRecording != null || endLinkRecording != null || playbackJob?.isActive == true) {
             ChatUtils.modMessage("&eStop recording/playback before reloading routes config.")
             return
         }
@@ -591,6 +868,7 @@ object SecretRoutes : Feature(
     private fun loadConfig(): Boolean {
         val file = selectedRoutesConfigFile()
         routes.clear()
+        completedRooms.clear()
         activeRoutesConfigPath = file.absolutePath
 
         if (!file.exists()) return false
@@ -598,11 +876,35 @@ object SecretRoutes : Feature(
         var loadedAny = false
         runCatching {
             FileReader(file).use { reader ->
-                val type = object : TypeToken<MutableMap<String, RoomRoute>>() {}.type
-                val loaded = JsonUtils.gsonBuilder.fromJson<MutableMap<String, RoomRoute>>(reader, type) ?: mutableMapOf()
-                routes.putAll(loaded)
+                val root = JsonParser.parseReader(reader)
+                if (!root.isJsonObject) return@use
+
+                val rootObject = root.asJsonObject
+                if (rootObject.has("routes")) {
+                    val routesType = object : TypeToken<MutableMap<String, RoomRoute>>() {}.type
+                    val loadedRoutes = JsonUtils.gsonBuilder.fromJson<MutableMap<String, RoomRoute>>(
+                        rootObject.get("routes"),
+                        routesType
+                    ) ?: mutableMapOf()
+                    routes.putAll(loadedRoutes)
+
+                    rootObject.getAsJsonArray("completedRooms")
+                        ?.forEach { element ->
+                            if (element.isJsonPrimitive && element.asJsonPrimitive.isString) {
+                                completedRooms.add(element.asString)
+                            }
+                        }
+                } else {
+                    // Legacy format: top-level map of room -> route.
+                    val routesType = object : TypeToken<MutableMap<String, RoomRoute>>() {}.type
+                    val loadedRoutes = JsonUtils.gsonBuilder.fromJson<MutableMap<String, RoomRoute>>(rootObject, routesType)
+                        ?: mutableMapOf()
+                    routes.putAll(loadedRoutes)
+                }
                 loadedAny = true
-                NoammAddons.logger.info("${this.javaClass.simpleName} Config loaded from ${file.path}: ${routes.size} rooms.")
+                NoammAddons.logger.info(
+                    "${this.javaClass.simpleName} Config loaded from ${file.path}: ${routes.size} rooms, ${completedRooms.size} completed."
+                )
             }
         }.onFailure {
             NoammAddons.logger.error("${this.javaClass.simpleName} Failed to load config from ${file.path}!", it)
@@ -616,7 +918,11 @@ object SecretRoutes : Feature(
         runCatching {
             file.parentFile?.mkdirs()
             FileWriter(file).use { writer ->
-                JsonUtils.gsonBuilder.toJson(routes, writer)
+                val payload = linkedMapOf<String, Any>(
+                    "routes" to routes,
+                    "completedRooms" to completedRooms.toList().sorted()
+                )
+                JsonUtils.gsonBuilder.toJson(payload, writer)
             }
             activeRoutesConfigPath = file.absolutePath
             NoammAddons.logger.info("${this.javaClass.simpleName} Config saved to ${file.path}.")
@@ -628,6 +934,7 @@ object SecretRoutes : Feature(
     private fun beginPlayback() {
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording before playback.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording before playback.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording before playback.")
         if (playbackJob?.isActive == true) return ChatUtils.modMessage("&eSecret Route playback is already running.")
 
         val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to play a route.")
@@ -635,7 +942,7 @@ object SecretRoutes : Feature(
         val playerStart = mc.player?.blockPosition()?.below()
             ?: return ChatUtils.modMessage("&cCould not resolve your starting block.")
         SecretRoutesDebugger.plan {
-            "Begin playback room=${ctx.room.name}, playerStart=${playerStart.toShortString()}, routeSteps=${route.steps.size}, startLinks=${route.startLinks.orEmpty().size}"
+            "Begin playback room=${ctx.room.name}, playerStart=${playerStart.toShortString()}, routeSteps=${route.steps.size}, startLinks=${route.startLinks.orEmpty().size}, endBlocks=${route.endBlocks.orEmpty().size}, endHelpers=${route.endHelperBlocks.orEmpty().size}"
         }
 
         val plan = resolvePlaybackPlan(ctx, route, playerStart)
@@ -660,14 +967,16 @@ object SecretRoutes : Feature(
             "Playback plan matched room=${ctx.room.name}, usedAltStart=${plan.usedAltStart}, resumedFromRouteStep=${plan.resumedFromRouteStep}, resumeLabel=${plan.resumeLabel}, totalSteps=${plan.steps.size}"
         }
 
-        startPlayback(ctx, plan.steps)
+        startPlayback(ctx, plan)
     }
 
-    private fun startPlayback(ctx: RoomContext, steps: List<RouteStep>) {
-        SecretRoutesDebugger.step { "Starting playback coroutine room=${ctx.room.name}, steps=${steps.size}" }
+    private fun startPlayback(ctx: RoomContext, plan: PlaybackPlan) {
+        SecretRoutesDebugger.step {
+            "Starting playback coroutine room=${ctx.room.name}, steps=${plan.steps.size}, primaryEnd=${plan.primaryEndBlock?.toShortString() ?: "none"}"
+        }
         activePlaybackRoomName = ctx.room.name
         playbackJob = scope.launch {
-            runCatching { playRoute(ctx, steps) }
+            runCatching { playRoute(ctx, plan.steps, plan.primaryEndBlock) }
                 .onFailure {
                     if (it !is CancellationException) {
                         ChatUtils.modMessage("&cSecret Route playback failed: ${it.message ?: it::class.simpleName}")
@@ -683,7 +992,7 @@ object SecretRoutes : Feature(
             resetCenterHoldState()
             return
         }
-        if (recording != null) {
+        if (recording != null || endLinkRecording != null) {
             resetCenterHoldState()
             return
         }
@@ -758,7 +1067,7 @@ object SecretRoutes : Feature(
         SecretRoutesDebugger.autoStart {
             "Auto-starting room=${ctx.room.name}, usedAltStart=${plan.usedAltStart}, resumedFromRouteStep=${plan.resumedFromRouteStep}, resumeLabel=${plan.resumeLabel}, start=${playerStart.toShortString()}, steps=${plan.steps.size}"
         }
-        startPlayback(ctx, plan.steps)
+        startPlayback(ctx, plan)
     }
 
     private fun resolvePlaybackPlan(
@@ -768,12 +1077,18 @@ object SecretRoutes : Feature(
         allowRouteStepResume: Boolean = true
     ): PlaybackPlan? {
         val mainStartBlock = toWorld(route.startBlock, ctx)
+        val primaryEnd = primaryEndBlockRelative(route)
+        val endPostRoll = buildEndPostRollSteps(route, ctx)
         SecretRoutesDebugger.plan {
             "Resolving plan room=${ctx.room.name}, playerStart=${playerStart.toShortString()}, mainStart=${mainStartBlock.toShortString()}"
         }
         if (playerStart == mainStartBlock) {
             SecretRoutesDebugger.plan { "Matched main start block for room=${ctx.room.name}." }
-            return PlaybackPlan(route.steps, usedAltStart = false)
+            return PlaybackPlan(
+                steps = route.steps + endPostRoll,
+                usedAltStart = false,
+                primaryEndBlock = primaryEnd
+            )
         }
 
         val relativeStart = toRelative(playerStart, ctx)
@@ -804,7 +1119,12 @@ object SecretRoutes : Feature(
             SecretRoutesDebugger.plan {
                 "Resolved start-link chain room=${ctx.room.name}, start=${relativeStart.toShortString()}, hops=${chain.links.size}"
             }
-            return PlaybackPlan(preRoll + route.steps, usedAltStart = true, usedStartLink = true)
+            return PlaybackPlan(
+                steps = preRoll + route.steps + endPostRoll,
+                usedAltStart = true,
+                usedStartLink = true,
+                primaryEndBlock = primaryEnd
+            )
         }
 
         if (allowRouteStepResume) {
@@ -839,6 +1159,8 @@ object SecretRoutes : Feature(
             }
             return null
         }
+        val primaryEnd = primaryEndBlockRelative(route)
+        val endPostRoll = buildEndPostRollSteps(route, ctx)
 
         val sequences = listOf(route.steps to false)
 
@@ -860,10 +1182,11 @@ object SecretRoutes : Feature(
                 if (index < bestIndex) {
                     bestIndex = index
                     bestPlan = PlaybackPlan(
-                        steps = steps.drop(resumeIndex),
+                        steps = steps.drop(resumeIndex) + endPostRoll,
                         usedAltStart = usedAltStart,
                         resumedFromRouteStep = true,
-                        resumeLabel = buildResumeLabel(steps, index)
+                        resumeLabel = buildResumeLabel(steps, index),
+                        primaryEndBlock = primaryEnd
                     )
                 }
                 break
@@ -881,7 +1204,7 @@ object SecretRoutes : Feature(
         return bestPlan
     }
 
-    private suspend fun playRoute(ctx: RoomContext, steps: List<RouteStep>) {
+    private suspend fun playRoute(ctx: RoomContext, steps: List<RouteStep>, primaryEndBlock: BlockPos?) {
         for ((index, step) in steps.withIndex()) {
             SecretRoutesDebugger.step {
                 "Step ${index + 1}/${steps.size}: type=${step.type}, relPos=${step.pos?.toShortString()}, face=${step.direction}, yaw=${step.yaw}, pitch=${step.pitch}"
@@ -908,7 +1231,7 @@ object SecretRoutes : Feature(
 
                 RouteStepType.USE_HYPERION -> {
                     val target = step.pos?.let { toWorld(it, ctx) } ?: continue
-                    if (!useTargetedStep(target, null, arrayOf("HYPERION"), "Hyperion", 0.1, step.rotation(ctx))) return
+                    if (!useTargetedStep(target, null, WITHER_BLADE_ITEM_IDS, "Hyperion", 0.1, step.rotation(ctx))) return
                 }
 
                 RouteStepType.RIGHT_CLICK_SECRET -> {
@@ -926,8 +1249,10 @@ object SecretRoutes : Feature(
             }
             SecretRoutesDebugger.step { "Step ${index + 1}/${steps.size} completed." }
         }
-
-        ChatUtils.modMessage("&aFinished Secret Route for &e${ctx.room.name}&a.")
+        val endMessage = primaryEndBlock
+            ?.let { "&7(End: &b${toWorld(it, ctx).toShortString()}&7)" }
+            .orEmpty()
+        ChatUtils.modMessage("&aFinished Secret Route for &e${ctx.room.name}&a. $endMessage")
         releaseMovement()
     }
 
@@ -941,14 +1266,14 @@ object SecretRoutes : Feature(
         }
 
         val floor = mc.player?.blockPosition()?.below() ?: return true
-        if (findItemSlot("HYPERION") == null) {
+        if (findItemSlot(*WITHER_BLADE_ITEM_IDS) == null) {
             ChatUtils.modMessage("&cLow EHP detected, but Hyperion is not on your hotbar.")
             return true
         }
 
         waitForMana(hyperionManaCost.value, "low EHP Hyperion")
         ChatUtils.modMessage("&eLow EHP detected. Using Hyperion before continuing the route.")
-        return useTargetedStep(floor, null, arrayOf("HYPERION"), "Hyperion", 0.1)
+        return useTargetedStep(floor, null, WITHER_BLADE_ITEM_IDS, "Hyperion", 0.1)
     }
 
     private suspend fun waitForMana(step: RouteStep) {
@@ -1232,6 +1557,20 @@ object SecretRoutes : Feature(
         return roomName == session.roomName
     }
 
+    private fun isEndLinkRecordingCurrentRoom(): Boolean {
+        val session = endLinkRecording ?: return false
+        val roomName = ScanUtils.currentRoom?.name ?: return false
+        return roomName == session.roomName
+    }
+
+    private fun isLinkRecordingCurrentRoom(): Boolean {
+        return isStartLinkRecordingCurrentRoom() || isEndLinkRecordingCurrentRoom()
+    }
+
+    private fun recordLinkStep(): Boolean {
+        return recordStartLink() || recordEndLink()
+    }
+
     private suspend fun withRecordingPaused(block: suspend () -> Unit) {
         SecretRoutesDebugger.recording { "Recording paused." }
         recordingPaused = true
@@ -1326,6 +1665,90 @@ object SecretRoutes : Feature(
         ChatUtils.modMessage(
             "&aSaved start link for &e${session.roomName}&a: &b${source.toShortString()} &7-> &b${targetRelative.toShortString()}&a."
         )
+        return true
+    }
+
+    private fun recordEndLink(): Boolean {
+        val session = endLinkRecording ?: return false
+        val player = mc.player ?: return false
+        val distance = EtherwarpHelper.getEtherwarpDistance(player.mainHandItem) ?: return false
+        val etherPos = EtherwarpHelper.getEtherPos(player.position(), player.lookAngle, distance)
+        val target = etherPos.pos ?: return false
+        if (!etherPos.succeeded) return false
+        val direction = (mc.hitResult as? BlockHitResult)
+            ?.takeIf { it.blockPos == target }
+            ?.direction
+        val relativeRotation = currentRelativeRotation()
+
+        val ctx = currentRoomContext() ?: return false
+        if (ctx.room.name != session.roomName) return false
+
+        val route = routes[session.roomName]
+            ?: run {
+                endLinkRecording = null
+                ChatUtils.modMessage("&cNo Secret Route saved for &e${session.roomName}&c.")
+                return true
+            }
+
+        val targetRelative = toRelative(target, ctx)
+        val source = session.sourceEnd
+        if (targetRelative == source) {
+            endLinkRecording = null
+            ChatUtils.modMessage("&c/nsr end failed: source and target end blocks are the same.")
+            return true
+        }
+
+        val updatedEndLinks = route.endLinks.orEmpty()
+            .filterNot { it.from == source && it.to == targetRelative }
+            .toMutableList()
+        updatedEndLinks.add(
+            EndLink(
+                from = source,
+                to = targetRelative,
+                direction = direction,
+                yaw = relativeRotation?.yaw,
+                pitch = relativeRotation?.pitch
+            )
+        )
+
+        val updatedHelpers = route.endHelperBlocks.orEmpty().toMutableList()
+        val updatedEnds = route.endBlocks.orEmpty().toMutableList()
+
+        when (session.type) {
+            EndLinkRecordingType.HELPER -> {
+                val isFinalEnd = updatedEnds.contains(targetRelative)
+                if (!isFinalEnd && !updatedHelpers.contains(targetRelative)) {
+                    updatedHelpers.add(targetRelative)
+                }
+            }
+            EndLinkRecordingType.FINAL -> {
+                updatedHelpers.remove(targetRelative)
+                if (!updatedEnds.contains(targetRelative)) updatedEnds.add(targetRelative)
+            }
+        }
+
+        val updatedRoute = route.copy(
+            endLinks = updatedEndLinks,
+            endBlocks = updatedEnds,
+            endHelperBlocks = updatedHelpers
+        )
+
+        val routeEnd = routeEndBlockRelative(updatedRoute)
+        val primaryEnd = primaryEndBlockRelative(updatedRoute)
+        if (primaryEnd != null && routeEnd != null && primaryEnd != routeEnd) {
+            val chain = resolveEndLinkChain(updatedRoute, routeEnd, primaryEnd)
+            if (!chain.success) {
+                endLinkRecording = null
+                ChatUtils.modMessage("&c/nsr end failed: ${chain.error ?: "invalid end-link chain"}.")
+                return true
+            }
+        }
+
+        routes[session.roomName] = updatedRoute
+        saveConfig()
+        endLinkRecording = null
+        val kind = if (session.type == EndLinkRecordingType.HELPER) "end helper link" else "end link"
+        ChatUtils.modMessage("&aSaved $kind for &e${session.roomName}&a: &b${source.toShortString()} &7-> &b${targetRelative.toShortString()}&a.")
         return true
     }
 
@@ -1448,6 +1871,76 @@ object SecretRoutes : Feature(
                         phase = phase
                     )
             }
+        }
+
+        if (renderEnd.value) {
+            val routeEnd = routeEndBlockRelative(route)
+            routeEnd?.let { relativeRouteEnd ->
+                val ogEndBlock = toWorld(relativeRouteEnd, ctx)
+                Render3D.renderBlock(event.ctx, ogEndBlock, endHelperBlockColor.value, phase = phase)
+                Render3D.renderString(
+                    "OG End",
+                    ogEndBlock.x + 0.5,
+                    ogEndBlock.y + 1.2,
+                    ogEndBlock.z + 0.5,
+                    scale = 1.1f,
+                    color = Color.WHITE,
+                    phase = phase
+                )
+            }
+
+            val primaryEnd = primaryEndBlockRelative(route)
+            primaryEnd?.let { relativeEnd ->
+                if (relativeEnd != routeEnd) {
+                    val endBlock = toWorld(relativeEnd, ctx)
+                    Render3D.renderBlock(event.ctx, endBlock, endBlockColor.value, phase = phase)
+                    Render3D.renderString(
+                        "End 1",
+                        endBlock.x + 0.5,
+                        endBlock.y + 1.2,
+                        endBlock.z + 0.5,
+                        scale = 1.2f,
+                        color = Color.WHITE,
+                        phase = phase
+                    )
+                }
+            }
+
+            var endIndex = 2
+            route.endBlocks.orEmpty()
+                .asSequence()
+                .filter { it != primaryEnd && it != routeEnd }
+                .forEach { relativeEnd ->
+                    val endBlock = toWorld(relativeEnd, ctx)
+                    Render3D.renderBlock(event.ctx, endBlock, endBlockColor.value, phase = phase)
+                    Render3D.renderString(
+                        "End ${endIndex++}",
+                        endBlock.x + 0.5,
+                        endBlock.y + 1.2,
+                        endBlock.z + 0.5,
+                        scale = 1.1f,
+                        color = Color.WHITE,
+                        phase = phase
+                    )
+                }
+
+            var helperIndex = 1
+            route.endHelperBlocks.orEmpty()
+                .asSequence()
+                .filter { it != routeEnd }
+                .forEach { helper ->
+                    val helperBlock = toWorld(helper, ctx)
+                    Render3D.renderBlock(event.ctx, helperBlock, endHelperBlockColor.value, phase = phase)
+                    Render3D.renderString(
+                        "End Helper ${helperIndex++}",
+                        helperBlock.x + 0.5,
+                        helperBlock.y + 1.2,
+                        helperBlock.z + 0.5,
+                        scale = 1.0f,
+                        color = Color.WHITE,
+                        phase = phase
+                    )
+                }
         }
 
         if (renderEtherwarpLines.value) {
@@ -1593,6 +2086,10 @@ object SecretRoutes : Feature(
         return (id.contains("SUPERBOOM") && id.contains("TNT")) || (id.contains("BOOM") && id.contains("TNT"))
     }
 
+    private fun isWitherBlade(itemId: String?): Boolean {
+        return itemId?.equalsOneOf(*WITHER_BLADE_ITEM_IDS) == true
+    }
+
     private fun isRouteRightClickTarget(pos: BlockPos): Boolean {
         if (DungeonUtils.isSecret(pos)) return true
         val block = mc.level?.getBlockState(pos)?.block ?: return false
@@ -1610,6 +2107,134 @@ object SecretRoutes : Feature(
             }
         }
         return known
+    }
+
+    private fun routeEndBlockRelative(route: RoomRoute): BlockPos? {
+        return inferEndBlockFromSteps(route.steps) ?: route.startBlock
+    }
+
+    private fun primaryEndBlockRelative(route: RoomRoute): BlockPos? {
+        val routeEnd = routeEndBlockRelative(route)
+        val ends = route.endBlocks.orEmpty()
+        return ends.firstOrNull { it != routeEnd }
+            ?: ends.firstOrNull()
+            ?: routeEnd
+    }
+
+    private fun knownEndBlocksRelative(route: RoomRoute): Set<BlockPos> {
+        val known = linkedSetOf<BlockPos>()
+        routeEndBlockRelative(route)?.let(known::add)
+        known.addAll(route.endHelperBlocks.orEmpty())
+        known.addAll(route.endBlocks.orEmpty())
+        route.endLinks.orEmpty().forEach {
+            known.add(it.from)
+            known.add(it.to)
+        }
+        return known
+    }
+
+    private fun inferEndBlockFromSteps(steps: List<RouteStep>): BlockPos? {
+        steps.asReversed()
+            .asSequence()
+            .firstOrNull { it.type == RouteStepType.ETHERWARP }
+            ?.pos
+            ?.let { return it }
+
+        return steps.asReversed()
+            .asSequence()
+            .mapNotNull { it.startAnchorRelativePos() }
+            .firstOrNull()
+    }
+
+    private fun buildEndPostRollSteps(route: RoomRoute, ctx: RoomContext): List<RouteStep> {
+        val routeEnd = routeEndBlockRelative(route) ?: return emptyList()
+        val primaryEnd = primaryEndBlockRelative(route) ?: return emptyList()
+        if (routeEnd == primaryEnd) return emptyList()
+
+        val chain = resolveEndLinkChain(route, routeEnd, primaryEnd)
+        if (!chain.success) {
+            SecretRoutesDebugger.failure {
+                "End-link chain failed room=${ctx.room.name}, routeEnd=${routeEnd.toShortString()}, primaryEnd=${primaryEnd.toShortString()}, error=${chain.error}"
+            }
+            return emptyList()
+        }
+
+        return chain.links.map { link ->
+            val fallbackRotation = endLinkFallbackRotation(ctx, link)
+            val yaw = link.yaw ?: fallbackRotation?.yaw
+            val pitch = link.pitch ?: fallbackRotation?.pitch
+            RouteStep(
+                type = RouteStepType.ETHERWARP,
+                pos = link.to,
+                direction = link.direction,
+                yaw = yaw,
+                pitch = pitch
+            )
+        }
+    }
+
+    private fun resolveEndLinkChain(route: RoomRoute, start: BlockPos, target: BlockPos): EndChainResolution {
+        if (start == target) return EndChainResolution(success = true, links = emptyList())
+
+        val linksByFrom = route.endLinks.orEmpty().groupBy { it.from }
+        if (linksByFrom[start].isNullOrEmpty()) {
+            return EndChainResolution(success = false, error = "dead-end at ${start.toShortString()}")
+        }
+
+        val queue = java.util.ArrayDeque<BlockPos>()
+        val visited = hashSetOf<BlockPos>()
+        val depthByPos = hashMapOf<BlockPos, Int>()
+        val previous = hashMapOf<BlockPos, Pair<BlockPos, EndLink>>()
+        var exceededHopLimit = false
+
+        queue.add(start)
+        visited.add(start)
+        depthByPos[start] = 0
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            val depth = depthByPos[current] ?: 0
+            if (depth >= START_LINK_MAX_HOPS) {
+                exceededHopLimit = true
+                continue
+            }
+
+            for (link in linksByFrom[current].orEmpty()) {
+                val next = link.to
+                if (visited.contains(next)) continue
+
+                visited.add(next)
+                depthByPos[next] = depth + 1
+                previous[next] = current to link
+
+                if (next == target) {
+                    val path = mutableListOf<EndLink>()
+                    var cursor = target
+                    while (cursor != start) {
+                        val step = previous[cursor]
+                            ?: return EndChainResolution(
+                                success = false,
+                                error = "internal chain reconstruction failure at ${cursor.toShortString()}"
+                            )
+                        path.add(step.second)
+                        cursor = step.first
+                    }
+                    path.reverse()
+                    return EndChainResolution(success = true, links = path)
+                }
+
+                queue.add(next)
+            }
+        }
+
+        if (exceededHopLimit) {
+            return EndChainResolution(success = false, error = "too many end links (>${START_LINK_MAX_HOPS})")
+        }
+
+        return EndChainResolution(
+            success = false,
+            error = "no path from ${start.toShortString()} to ${target.toShortString()}"
+        )
     }
 
     private fun resolveStartLinkChain(route: RoomRoute, start: BlockPos): StartChainResolution {
@@ -1658,7 +2283,40 @@ object SecretRoutes : Feature(
         return removed
     }
 
+    private fun collectDependentEndNodes(links: List<EndLink>, root: BlockPos): Set<BlockPos> {
+        val removed = linkedSetOf<BlockPos>()
+        val reverse = links.groupBy({ it.to }, { it.from })
+        val queue = ArrayDeque<BlockPos>()
+        queue.add(root)
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (!removed.add(current)) continue
+            reverse[current].orEmpty().forEach { queue.add(it) }
+        }
+
+        return removed
+    }
+
     private fun startLinkFallbackRotation(ctx: RoomContext, link: StartLink): MathUtils.Rotation? {
+        val from = toWorld(link.from, ctx)
+        val to = BlockAimUtils.blockCenter(toWorld(link.to, ctx))
+        val eye = Vec3(from.x + 0.5, from.y + 1.62, from.z + 0.5)
+
+        val dx = to.x - eye.x
+        val dy = to.y - eye.y
+        val dz = to.z - eye.z
+        val horizontal = sqrt(dx * dx + dz * dz)
+        if (horizontal <= 1.0e-6 && abs(dy) <= 1.0e-6) return null
+
+        val worldYaw = MathUtils.normalizeYaw((Math.toDegrees(atan2(dz, dx)) - 90.0).toFloat())
+        val worldPitch = MathUtils.normalizePitch((-Math.toDegrees(atan2(dy, horizontal))).toFloat())
+        val relativeYaw = MathUtils.normalizeYaw(worldYaw + ctx.rotation.toFloat())
+
+        return MathUtils.Rotation(relativeYaw, worldPitch)
+    }
+
+    private fun endLinkFallbackRotation(ctx: RoomContext, link: EndLink): MathUtils.Rotation? {
         val from = toWorld(link.from, ctx)
         val to = BlockAimUtils.blockCenter(toWorld(link.to, ctx))
         val eye = Vec3(from.x + 0.5, from.y + 1.62, from.z + 0.5)
