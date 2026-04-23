@@ -1,6 +1,6 @@
 # CritsAddons 1.21.10
 
-Addon features for NoammAddons on Minecraft 1.21.10. Current mod version: `1.2.1`.
+Addon features for NoammAddons on Minecraft 1.21.10. Current mod version: `1.2.2`.
 
 ## What Is This
 
@@ -30,6 +30,8 @@ NoammAddons is required. CritsAddons does not run standalone.
   Client-side item cooldown overlay for selected SkyBlock ability items.
 - **Custom Font**  
   Loads a `.ttf` font from `config/CritsAddons/fonts` and applies it to Minecraft text rendering.
+- **2D Star ESP**  
+  Draws a flat 2D ESP box around starred dungeon mobs with configurable border color, fill color, line width, glow border, glow radius, through-walls rendering, and max distance. The box can either rotate with the mob or always face your camera.
 - **M3 FF Display**  
   Displays a Fire Freeze timing indicator for M3 Professor dialogue.
 - **M3 Auto FF**  
