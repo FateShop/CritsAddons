@@ -2,6 +2,7 @@ package com.github.noamm9.critsaddons.features.impl.critsaddons
 
 import com.github.noamm9.NoammAddons
 import com.github.noamm9.NoammAddons.MOD_NAME
+import com.github.noamm9.critsaddons.CritsAddonsDefaults
 import com.github.noamm9.event.EventPriority
 import com.github.noamm9.event.impl.DungeonEvent
 import com.github.noamm9.event.impl.KeyboardEvent
@@ -260,6 +261,7 @@ object SecretRoutes : Feature(
     private var activeRoutesConfigPath: String? = null
 
     override fun init() {
+        CritsAddonsDefaults.install()
         loadConfig()
 
         register<TickEvent.Start> {

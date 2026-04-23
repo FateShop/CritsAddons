@@ -1,6 +1,6 @@
 # CritsAddons 1.21.10
 
-Addon features for NoammAddons on Minecraft 1.21.10.
+Addon features for NoammAddons on Minecraft 1.21.10. Current mod version: `1.2.1`.
 
 ## What Is This
 
@@ -20,24 +20,48 @@ NoammAddons is required. CritsAddons does not run standalone.
 
 ## Features
 
-- **Party Finder**  
-  Adds Party Finder overlays, tooltip stats, and optional auto-kick requirements (class/SPR/secrets/PB).
-- **Party HUD**  
-  Displays party members with class, class level, cata, secrets stats, and PB, with live party chat syncing and cache clear.
-- **Secret Routes**  
-  Records/replays room routes with Etherwarp/TNT/Break/Hyperion/secret/wait/bat steps, start links, end links/helpers, auto-start, and step resume.
-- **NSR Helper**  
-  Shows route completeness helpers (door coverage, same start/end checks) with HUD + missing block rendering.
+- **Auto LCM**  
+  While holding left click as Mage in dungeons, auto-clicks LCM with configurable random tick delay.
+- **Auto RCM**  
+  On one right-click with a selected trigger item, swaps to a selected RCM item, right-clicks, then swaps back. Optional cooldown check can block activation while the RCM item is on cooldown.
+- **Better Glow**  
+  Custom high-star mob glow/chams controls.
+- **Cooldown Display**  
+  Client-side item cooldown overlay for selected SkyBlock ability items.
+- **Custom Font**  
+  Loads a `.ttf` font from `config/CritsAddons/fonts` and applies it to Minecraft text rendering.
+- **M3 FF Display**  
+  Displays a Fire Freeze timing indicator for M3 Professor dialogue.
+- **M3 Auto FF**  
+  Swaps to Fire Freeze Staff when the M3 FF timer starts, right-clicks when the timer reaches zero, then swaps back.
 - **NSR Completed**  
-  Tracks completed rooms and renders a HUD sorted as **Yellow (in current run, incomplete)**, **Green (completed)**, **Red (incomplete)**.
-- **Secret Routes Debugger**  
-  Channel-based debug logs for route planning/playback/packet/etherwarp/mana/wait/recording.
+  Tracks completed rooms in `secretRoutes.json` and renders a HUD sorted as **Yellow (in current run, incomplete)**, **Green (completed)**, **Red (incomplete)**.
+- **NSR Helper**  
+  Shows route completeness helpers including same start/end checks, start door coverage, end door coverage, and missing block rendering.
+- **Party Finder**  
+  Adds Party Finder overlays, tooltip stats, and optional auto-kick requirements for class, secrets, score-per-run, and personal best.
+- **Party HUD**  
+  Displays party members with class, class level, Catacombs level, secrets stats, and personal best, with live party chat syncing and cache clear.
 - **Persistent Secret Heads**  
   Keeps specific clicked secret heads visible as ghost targets for easier route recording.
+- **Secret Routes**  
+  Records/replays room routes with Etherwarp/TNT/Break/Hyperion/secret/wait/bat steps, start links, end links/helpers, auto-start, and step resume.
+- **Secret Routes Debugger**  
+  Channel-based debug logs for route planning/playback/packet/etherwarp/mana/wait/recording.
+- **Stat Display**  
+  Custom HUD bars and numbers for health, mana, overflow mana, EHP, defense, and speed, with color controls, icon labels, optional default stat hiding, and optional experience bar hiding.
 - **Zoom**  
   Keybind zoom with mouse-wheel zoom adjustment and optional smoothed camera turning.
-- **Auto LCM**  
-  While holding left click as Mage in dungeons, auto-clicks with configurable random tick delay.
+
+## Default Files
+
+Fresh installs include bundled defaults from this build:
+
+- `config/NoammAddons/config.json` is created from the current CritsAddons/NoammAddons settings if it does not already exist.
+- `config/NoammAddons/secretRoutes.json` is created from the current active Secret Routes file if it does not already exist.
+- `config/CritsAddons/fonts/BubbleLetters_Filled_TrueFix.ttf` is created if it does not already exist.
+
+Existing files are never overwritten by the default installer.
 
 ## Secret Routes Commands
 
