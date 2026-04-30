@@ -7,6 +7,8 @@
     "MixinCategoryType"
   ],
   "client": [
+    "AccessorAbstractContainerScreenStorageOverlay",
+    "MixinAbstractContainerScreenStorageOverlay",
     "MixinFontManagerCustomFont",
     "MixinFontSetAccessor",
     "MixinGameRendererZoom",
@@ -14,8 +16,10 @@
     "MixinExperienceBarRendererStatDisplay",
     "MixinLivingEntityRendererBetterGlow",
     "MixinMinecraft",
+    "MixinMinecraftSetScreenStorageOverlay",
     "MixinMouseHandlerZoom",
-    "MixinPostPassBetterGlow"
+    "MixinPostPassBetterGlow",
+    "MixinSlotStorageOverlay"
   ],
   "injectors": {
     "defaultRequire": 1

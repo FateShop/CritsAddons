@@ -31,6 +31,8 @@ import com.github.noamm9.utils.MathUtils
 import com.github.noamm9.utils.PlayerUtils
 import com.github.noamm9.utils.Utils.equalsOneOf
 import com.github.noamm9.utils.dungeons.DungeonUtils
+import com.github.noamm9.utils.dungeons.map.DungeonInfo
+import com.github.noamm9.utils.dungeons.map.core.Room
 import com.github.noamm9.utils.dungeons.map.core.UniqueRoom
 import com.github.noamm9.utils.dungeons.map.utils.ScanUtils
 import com.github.noamm9.utils.items.EtherwarpHelper
@@ -205,6 +207,16 @@ object SecretRoutes : Feature(
         val type: EndLinkRecordingType
     )
 
+    private data class NextRoomRecordingSession(
+        val sourceRoomName: String,
+        val sourceWorldBlock: BlockPos
+    )
+
+    data class NextRoomLinkProfile(
+        val yawOffset: Float,
+        val pitchOffset: Float
+    )
+
     private data class PlaybackPlan(
         val steps: List<RouteStep>,
         val usedAltStart: Boolean,
@@ -240,6 +252,22 @@ object SecretRoutes : Feature(
         val ogEndWorld: BlockPos?
     )
 
+    data class RouteNavigationSnapshot(
+        val roomName: String,
+        val sameStartAndOgEnd: Boolean,
+        val hubWorld: BlockPos?,
+        val startBlocksWorld: Set<BlockPos>,
+        val endNodesWorld: Set<BlockPos>,
+        val primaryEndWorld: BlockPos?
+    )
+
+    data class RouteLinkStep(
+        val fromWorld: BlockPos,
+        val toWorld: BlockPos,
+        val rotation: MathUtils.Rotation?,
+        val direction: Direction?
+    )
+
     private val routes = mutableMapOf<String, RoomRoute>()
     private val completedRooms = linkedSetOf<String>()
     private val completedSecretsByRoom = mutableMapOf<String, Int>()
@@ -248,6 +276,7 @@ object SecretRoutes : Feature(
     private var recording: RecordingSession? = null
     private var startLinkRecording: StartLinkRecordingSession? = null
     private var endLinkRecording: EndLinkRecordingSession? = null
+    private var nextRoomRecording: NextRoomRecordingSession? = null
     private var playbackJob: Job? = null
     private var activePlaybackRoomName: String? = null
     private var lastBlockedMessageAt = 0L
@@ -259,6 +288,7 @@ object SecretRoutes : Feature(
     private var centerHoldStartedAt = 0L
     private var recordingPaused = false
     private var activeRoutesConfigPath: String? = null
+    private var nextRoomLinkProfile: NextRoomLinkProfile? = null
 
     override fun init() {
         CritsAddonsDefaults.install()
@@ -306,6 +336,8 @@ object SecretRoutes : Feature(
                 PersistentSecretHeads.findGhostHeadTargetForRoute()?.let { markCurrentRoomSecretClick(it) }
             }
 
+            if (recordNextRoomLink()) return@register
+
             if (isLinkRecordingCurrentRoom()) {
                 if (recordLinkStep()) return@register
                 event.isCanceled = true
@@ -326,6 +358,8 @@ object SecretRoutes : Feature(
             if (LocationUtils.inDungeon && !LocationUtils.inBoss) {
                 markCurrentRoomSecretClick(event.pos)
             }
+
+            if (recordNextRoomLink()) return@register
 
             if (isLinkRecordingCurrentRoom()) {
                 if (recordLinkStep()) return@register
@@ -448,6 +482,12 @@ object SecretRoutes : Feature(
         }
 
         register<DungeonEvent.RoomEvent.onExit> {
+            val session = nextRoomRecording ?: return@register
+            if (session.sourceRoomName != event.room.name) return@register
+            cancelRecording("Left ${event.room.name}; /nsr next recording canceled.")
+        }
+
+        register<DungeonEvent.RoomEvent.onExit> {
             if (activePlaybackRoomName != event.room.name) return@register
             stopPlayback("&eLeft ${event.room.name}; Secret Route playback canceled.")
         }
@@ -537,6 +577,29 @@ object SecretRoutes : Feature(
 
         startLinkRecording = StartLinkRecordingSession(ctx.room.name, relativeStart)
         ChatUtils.modMessage("&aStarted /nsr start link recording for &e${ctx.room.name}&a. Use exactly one etherwarp to a known start block.")
+    }
+
+    fun startNextRoomRecording() {
+        val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to start /nsr next.")
+        if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
+        if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        if (nextRoomRecording != null) return ChatUtils.modMessage("&cA /nsr next recording is already active.")
+        stopPlayback()
+
+        val route = routes[ctx.room.name]
+            ?: return ChatUtils.modMessage("&cNo Secret Route saved for &e${ctx.room.name}&c. Record the room first.")
+        val worldBlock = mc.player?.blockPosition()?.below() ?: return ChatUtils.modMessage("&cCould not resolve your current block.")
+        if (!isCenteredOnBlock(worldBlock)) {
+            return ChatUtils.modMessage("&cStand in the center of the block before starting &b/nsr next&c.")
+        }
+        val relative = toRelative(worldBlock, ctx)
+        if (relative !in knownEndBlocksRelative(route)) {
+            return ChatUtils.modMessage("&cYou must stand on a known end/end-helper block before recording &b/nsr next&c.")
+        }
+
+        nextRoomRecording = NextRoomRecordingSession(ctx.room.name, worldBlock)
+        ChatUtils.modMessage("&aStarted /nsr next recording. Etherwarp once into the next room's start block.")
     }
 
     fun deleteStartLinkFromCurrentBlock() {
@@ -683,6 +746,8 @@ object SecretRoutes : Feature(
 
     fun isRoomMarkedCompleted(roomName: String): Boolean = completedRooms.contains(roomName)
 
+    fun getNextRoomLinkProfile(): NextRoomLinkProfile? = nextRoomLinkProfile
+
     fun addEndBlockFromCurrentBlock() {
         startEndLinkRecording(EndLinkRecordingType.FINAL)
     }
@@ -717,10 +782,11 @@ object SecretRoutes : Feature(
     }
 
     fun cancelRecording(message: String? = null) {
-        if (recording == null && startLinkRecording == null && endLinkRecording == null) return
+        if (recording == null && startLinkRecording == null && endLinkRecording == null && nextRoomRecording == null) return
         recording = null
         startLinkRecording = null
         endLinkRecording = null
+        nextRoomRecording = null
         lastBreakRecord = null
         lastTntRecord = null
         ChatUtils.modMessage("&e${message ?: "Secret Route recording canceled."}")
@@ -801,8 +867,13 @@ object SecretRoutes : Feature(
     }
 
     fun getCurrentRoomHelperSnapshot(): RouteHelperSnapshot? {
-        val ctx = currentRoomContext() ?: return null
-        val route = routes[ctx.room.name] ?: return null
+        val room = ScanUtils.currentRoom ?: return null
+        return getRoomHelperSnapshot(room)
+    }
+
+    fun getRoomHelperSnapshot(room: UniqueRoom): RouteHelperSnapshot? {
+        val ctx = roomContext(room) ?: return null
+        val route = routes[room.name] ?: return null
 
         val ogEndRelative = routeEndBlockRelative(route)
         val ogEndWorld = ogEndRelative?.let { toWorld(it, ctx) }
@@ -821,12 +892,71 @@ object SecretRoutes : Feature(
         ogEndWorld?.let(endNodes::add)
 
         return RouteHelperSnapshot(
-            roomName = ctx.room.name,
+            roomName = room.name,
             sameStartAndOgEnd = route.startBlock == ogEndRelative,
             startBlocksWorld = startBlocks,
             endNodesWorld = endNodes,
             ogEndWorld = ogEndWorld
         )
+    }
+
+    fun getRoomNavigationSnapshot(room: UniqueRoom): RouteNavigationSnapshot? {
+        val helper = getRoomHelperSnapshot(room) ?: return null
+        val ctx = roomContext(room) ?: return null
+        val route = routes[room.name] ?: return null
+        return RouteNavigationSnapshot(
+            roomName = helper.roomName,
+            sameStartAndOgEnd = helper.sameStartAndOgEnd,
+            hubWorld = helper.ogEndWorld,
+            startBlocksWorld = helper.startBlocksWorld,
+            endNodesWorld = helper.endNodesWorld,
+            primaryEndWorld = primaryEndBlockRelative(route)?.let { toWorld(it, ctx) }
+        )
+    }
+
+    fun buildStartLinkSteps(room: UniqueRoom, fromWorldStartBlock: BlockPos): List<RouteLinkStep>? {
+        val ctx = roomContext(room) ?: return null
+        val route = routes[room.name] ?: return null
+        val fromRelative = toRelative(fromWorldStartBlock, ctx)
+        if (fromRelative !in knownStartBlocksRelative(route)) return null
+
+        val chain = resolveStartLinkChain(route, fromRelative)
+        if (!chain.success) return null
+
+        return chain.links.map { link ->
+            val fallbackRotation = startLinkFallbackRotation(ctx, link)
+            val yaw = link.yaw ?: fallbackRotation?.yaw
+            val pitch = link.pitch ?: fallbackRotation?.pitch
+            RouteLinkStep(
+                fromWorld = toWorld(link.from, ctx),
+                toWorld = toWorld(link.to, ctx),
+                rotation = if (yaw != null && pitch != null) MathUtils.Rotation(yaw, pitch) else null,
+                direction = link.direction
+            )
+        }
+    }
+
+    fun buildEndLinkSteps(room: UniqueRoom, toWorldEndBlock: BlockPos): List<RouteLinkStep>? {
+        val ctx = roomContext(room) ?: return null
+        val route = routes[room.name] ?: return null
+        val routeEnd = routeEndBlockRelative(route) ?: return null
+        val targetRelative = toRelative(toWorldEndBlock, ctx)
+        if (targetRelative !in knownEndBlocksRelative(route)) return null
+
+        val chain = resolveEndLinkChain(route, routeEnd, targetRelative)
+        if (!chain.success) return null
+
+        return chain.links.map { link ->
+            val fallbackRotation = endLinkFallbackRotation(ctx, link)
+            val yaw = link.yaw ?: fallbackRotation?.yaw
+            val pitch = link.pitch ?: fallbackRotation?.pitch
+            RouteLinkStep(
+                fromWorld = toWorld(link.from, ctx),
+                toWorld = toWorld(link.to, ctx),
+                rotation = if (yaw != null && pitch != null) MathUtils.Rotation(yaw, pitch) else null,
+                direction = link.direction
+            )
+        }
     }
 
     private fun normalizeRoutesConfigName(raw: String): String {
@@ -871,6 +1001,7 @@ object SecretRoutes : Feature(
         val file = selectedRoutesConfigFile()
         routes.clear()
         completedRooms.clear()
+        nextRoomLinkProfile = null
         activeRoutesConfigPath = file.absolutePath
 
         if (!file.exists()) return false
@@ -896,6 +1027,13 @@ object SecretRoutes : Feature(
                                 completedRooms.add(element.asString)
                             }
                         }
+
+                    if (rootObject.has("nextRoomLinkProfile")) {
+                        nextRoomLinkProfile = JsonUtils.gsonBuilder.fromJson(
+                            rootObject.get("nextRoomLinkProfile"),
+                            NextRoomLinkProfile::class.java
+                        )
+                    }
                 } else {
                     // Legacy format: top-level map of room -> route.
                     val routesType = object : TypeToken<MutableMap<String, RoomRoute>>() {}.type
@@ -920,9 +1058,10 @@ object SecretRoutes : Feature(
         runCatching {
             file.parentFile?.mkdirs()
             FileWriter(file).use { writer ->
-                val payload = linkedMapOf<String, Any>(
+                val payload = linkedMapOf<String, Any?>(
                     "routes" to routes,
-                    "completedRooms" to completedRooms.toList().sorted()
+                    "completedRooms" to completedRooms.toList().sorted(),
+                    "nextRoomLinkProfile" to nextRoomLinkProfile
                 )
                 JsonUtils.gsonBuilder.toJson(payload, writer)
             }
@@ -1573,6 +1712,66 @@ object SecretRoutes : Feature(
         return recordStartLink() || recordEndLink()
     }
 
+    private fun findScannedRoomByStartBlock(target: BlockPos, excludingRoomName: String): UniqueRoom? {
+        return DungeonInfo.dungeonList
+            .filterIsInstance<Room>()
+            .mapNotNull { it.uniqueRoom }
+            .distinctBy { it.name }
+            .firstOrNull { room ->
+                room.name != excludingRoomName && getRoomNavigationSnapshot(room)?.startBlocksWorld?.contains(target) == true
+            }
+    }
+
+    private fun recordNextRoomLink(): Boolean {
+        val session = nextRoomRecording ?: return false
+        val player = mc.player ?: return false
+        val distance = EtherwarpHelper.getEtherwarpDistance(player.mainHandItem) ?: return false
+        val etherPos = EtherwarpHelper.getEtherPos(player.position(), player.lookAngle, distance)
+        val target = etherPos.pos ?: return false
+        if (!etherPos.succeeded) return false
+
+        val source = session.sourceWorldBlock
+        val sourceRoom = routes[session.sourceRoomName]
+        val sourceCtx = currentRoomContext()
+        if (sourceRoom == null || sourceCtx == null || sourceCtx.room.name != session.sourceRoomName) {
+            nextRoomRecording = null
+            ChatUtils.modMessage("&c/nsr next failed: source room context is no longer valid.")
+            return true
+        }
+
+        val sourceRelative = toRelative(source, sourceCtx)
+        if (sourceRelative !in knownEndBlocksRelative(sourceRoom)) {
+            nextRoomRecording = null
+            ChatUtils.modMessage("&c/nsr next failed: source block is not a known room end block.")
+            return true
+        }
+
+        val targetRoom = findScannedRoomByStartBlock(target, session.sourceRoomName)
+
+        if (targetRoom == null) {
+            nextRoomRecording = null
+            ChatUtils.modMessage("&c/nsr next failed: target must be a known start block in the next room.")
+            return true
+        }
+
+        val fallback = worldRotationFromBlocks(source, target) ?: run {
+            nextRoomRecording = null
+            ChatUtils.modMessage("&c/nsr next failed: could not derive fallback rotation.")
+            return true
+        }
+
+        val yawOffset = MathUtils.normalizeYaw(player.yRot - fallback.yaw)
+        val pitchOffset = MathUtils.normalizePitch(player.xRot - fallback.pitch)
+        nextRoomLinkProfile = NextRoomLinkProfile(yawOffset = yawOffset, pitchOffset = pitchOffset)
+        saveConfig()
+        nextRoomRecording = null
+        ChatUtils.modMessage(
+            "&aSaved /nsr next profile: &b${source.toShortString()} &7-> &b${target.toShortString()}&a. " +
+                "Offsets yaw=&e${"%.2f".format(Locale.US, yawOffset)}&a pitch=&e${"%.2f".format(Locale.US, pitchOffset)}&a."
+        )
+        return true
+    }
+
     private suspend fun withRecordingPaused(block: suspend () -> Unit) {
         SecretRoutesDebugger.recording { "Recording paused." }
         recordingPaused = true
@@ -1830,6 +2029,10 @@ object SecretRoutes : Feature(
 
     private fun currentRoomContext(): RoomContext? {
         val room = ScanUtils.currentRoom ?: return null
+        return roomContext(room)
+    }
+
+    private fun roomContext(room: UniqueRoom): RoomContext? {
         val corner = room.corner ?: return null
         val rotation = room.rotation?.let { 360 - it } ?: return null
         return RoomContext(room, rotation, corner)
@@ -2316,6 +2519,21 @@ object SecretRoutes : Feature(
         val relativeYaw = MathUtils.normalizeYaw(worldYaw + ctx.rotation.toFloat())
 
         return MathUtils.Rotation(relativeYaw, worldPitch)
+    }
+
+    private fun worldRotationFromBlocks(from: BlockPos, to: BlockPos): MathUtils.Rotation? {
+        val target = BlockAimUtils.blockCenter(to)
+        val eye = Vec3(from.x + 0.5, from.y + 1.62, from.z + 0.5)
+
+        val dx = target.x - eye.x
+        val dy = target.y - eye.y
+        val dz = target.z - eye.z
+        val horizontal = sqrt(dx * dx + dz * dz)
+        if (horizontal <= 1.0e-6 && abs(dy) <= 1.0e-6) return null
+
+        val worldYaw = MathUtils.normalizeYaw((Math.toDegrees(atan2(dz, dx)) - 90.0).toFloat())
+        val worldPitch = MathUtils.normalizePitch((-Math.toDegrees(atan2(dy, horizontal))).toFloat())
+        return MathUtils.Rotation(worldYaw, worldPitch)
     }
 
     private fun endLinkFallbackRotation(ctx: RoomContext, link: EndLink): MathUtils.Rotation? {

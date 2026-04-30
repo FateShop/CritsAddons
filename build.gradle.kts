@@ -69,6 +69,8 @@ dependencies {
     include("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     modImplementation("com.github.Noamm9.NoammAddons:${project.property("noammaddons_type")}:${project.property("noammaddons_version")}")
+
+    testImplementation(kotlin("test"))
 }
 
 tasks.register("setNoammAddonsVersion") {
@@ -151,6 +153,10 @@ tasks.withType<KotlinCompile>().configureEach {
     compilerOptions.jvmTarget.set(JvmTarget.fromTarget(targetJavaVersion.toString()))
 }
 
+tasks.test {
+    useJUnitPlatform()
+}
+
 tasks.jar {
     from("LICENSE") {
         rename { "${it}_${project.base.archivesName.get()}" }
@@ -167,6 +173,7 @@ publishing {
 }
 
 loom {
+    accessWidenerPath.set(file("src/main/resources/critsaddons.accesswidener"))
     runConfigs.named("client") {
         isIdeConfigGenerated = true
         vmArg("-XX:+AllowEnhancedClassRedefinition")

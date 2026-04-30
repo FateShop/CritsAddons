@@ -12,6 +12,7 @@
   "mixins": [
     "critsaddons.mixins.json"
   ],
+  "accessWidener": "critsaddons.accesswidener",
   "depends": {
     "fabricloader": ">=${loader_version}",
     "fabric-language-kotlin": ">=${kotlin_loader_version}",

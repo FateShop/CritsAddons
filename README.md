@@ -30,6 +30,10 @@ NoammAddons is required. CritsAddons does not run standalone.
   Client-side item cooldown overlay for selected SkyBlock ability items.
 - **Custom Font**  
   Loads a `.ttf` font from `config/CritsAddons/fonts` and applies it to Minecraft text rendering.
+- **Door ESP**  
+  Highlights the blocks around dungeon doorways instead of the door tile itself, using green for Wither doors, red for Blood doors, and opaque white for other mapped doorways.
+- **Dungeons TP Map**  
+  Opens a clickable dungeon map with room names and routes room-to-room using completed NSR doorway start/end links instead of generic geometry searching.
 - **2D Star ESP**  
   Draws a flat 2D ESP box around starred dungeon mobs with configurable border color, fill color, line width, glow border, glow radius, through-walls rendering, and max distance. The box can either rotate with the mob or always face your camera.
 - **M3 FF Display**  
@@ -52,6 +56,8 @@ NoammAddons is required. CritsAddons does not run standalone.
   Channel-based debug logs for route planning/playback/packet/etherwarp/mana/wait/recording.
 - **Stat Display**  
   Custom HUD bars and numbers for health, mana, overflow mana, EHP, defense, and speed, with color controls, icon labels, optional default stat hiding, and optional experience bar hiding.
+- **Storage Overlay**  
+  Replaces the vanilla SkyBlock storage screen with a scrollable overlay that shows cached Ender Chest and Backpack pages together, keeps per-profile storage data on disk, and supports clicking directly into the active page.
 - **Zoom**  
   Keybind zoom with mouse-wheel zoom adjustment and optional smoothed camera turning.
 
@@ -81,6 +87,8 @@ Use commands while inside a scanned dungeon room.
   Delete the room's saved route.
 - `/nsr complete`  
   Mark the current room as completed for **NSR Completed** tracking.
+- `/nsr next`  
+  Record one global room-to-room Etherwarp angle profile. Stand centered on a known room end/end-helper block, run the command, then Etherwarp once into the next room's start block.
 - `/nsr start`  
   Start one-link start recording (requires centered block position). Do exactly one Etherwarp from your current start block to an existing known start block. It auto-saves after a valid link.
 - `/nsr start delete`  
@@ -127,6 +135,26 @@ Use commands while inside a scanned dungeon room.
 
 - Party snapshot now updates from party chat events (`/p list`, joins, leaves, removes).
 - `Clear Cache` button clears HUD/profile caches and forces a short live refetch window.
+
+## Storage Overlay Notes
+
+- Open SkyBlock `Storage`, `Ender Chest`, or `Backpack` menus to populate page data.
+- The overlay caches storage contents per player in `config/NoammAddons/storage/<uuid>.nbt`.
+- Page cards with no cached inventory yet will show `Click to load`.
+- Columns, max height, scroll speed, retained scroll, and active-page scroll lock are configurable.
+- If `Inventory Search` is active in NoammAddons, matching items are highlighted inside the overlay too.
+
+## Dungeons TP Map Notes
+
+- Use the `Open Map Keybind` setting to open the map while inside a scanned dungeon.
+- The map renders room names directly on the room tiles.
+- Clicking a room only works if every room on the route is marked completed through `/nsr complete`.
+- Travel uses Secret Routes doorway data:
+  - nearest room start block
+  - start-link chain to the room hub (`og start == og end`)
+  - end-link chain to the doorway that leads to the next room
+  - direct Etherwarp into the next room's doorway start block
+- This version does not use the deleted generic Etherwarp corridor solver.
 
 ## Zoom Notes
 

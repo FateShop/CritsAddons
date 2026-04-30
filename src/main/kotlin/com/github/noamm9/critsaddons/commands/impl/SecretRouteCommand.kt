@@ -30,6 +30,12 @@ object SecretRouteCommand: BaseCommand("nsr") {
             }
         }
 
+        literal("next") {
+            runs {
+                SecretRoutes.startNextRoomRecording()
+            }
+        }
+
         literal("wait") {
             runs {
                 SecretRoutes.insertWaitStep()

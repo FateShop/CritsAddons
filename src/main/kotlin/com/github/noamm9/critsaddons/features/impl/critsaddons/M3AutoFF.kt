@@ -8,6 +8,7 @@ import com.github.noamm9.utils.ChatUtils.removeFormatting
 import com.github.noamm9.utils.PlayerUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import net.minecraft.world.InteractionHand
 import net.minecraft.world.item.ItemStack
 
 object M3AutoFF : Feature(
@@ -17,12 +18,14 @@ object M3AutoFF : Feature(
     private const val PROFESSOR_FIRE_FREEZE_LINE =
         "[BOSS] The Professor: Even if you took my barrier down, I can still fight."
     private const val FIRE_FREEZE_DELAY_MS = 5000L
+    private const val PRE_USE_DELAY_MS = 100L
     private const val RETURN_DELAY_MS = 75L
 
     private var isExecuting = false
     private var lastTriggerAtMs = 0L
     private var runId = 0
     private var lastMissingStaffMessageAt = 0L
+    private var lastUseFailureMessageAt = 0L
 
     override fun init() {
         register<ChatMessageEvent> {
@@ -69,7 +72,10 @@ object M3AutoFF : Feature(
 
                 if (!enabled || currentRun != runId) return@launch
                 PlayerUtils.swapToSlot(fireFreezeSlot)
-                PlayerUtils.rightClick()
+                delay(PRE_USE_DELAY_MS)
+                if (!useHeldItem()) {
+                    maybeUseFailureMessage()
+                }
                 CooldownDisplay.startRightClickCooldown(PlayerUtils.getHotbarSlot(fireFreezeSlot))
 
                 delay(RETURN_DELAY_MS)
@@ -100,6 +106,26 @@ object M3AutoFF : Feature(
         if (now - lastMissingStaffMessageAt < 1_000L) return
         lastMissingStaffMessageAt = now
         ChatUtils.modMessage("&cM3 Auto FF: Fire Freeze Staff is not on your hotbar.")
+    }
+
+    private fun useHeldItem(): Boolean {
+        val player = mc.player ?: return false
+        val gameMode = mc.gameMode ?: return false
+        val result = gameMode.useItem(player, InteractionHand.MAIN_HAND)
+        if (result.consumesAction()) {
+            player.swing(InteractionHand.MAIN_HAND)
+            return true
+        }
+
+        PlayerUtils.rightClick()
+        return true
+    }
+
+    private fun maybeUseFailureMessage() {
+        val now = System.currentTimeMillis()
+        if (now - lastUseFailureMessageAt < 1_000L) return
+        lastUseFailureMessageAt = now
+        ChatUtils.modMessage("&cM3 Auto FF: failed to use Fire Freeze Staff.")
     }
 
     private fun reset() {
