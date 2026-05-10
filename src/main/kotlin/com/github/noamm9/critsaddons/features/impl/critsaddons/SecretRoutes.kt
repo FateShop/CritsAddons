@@ -29,7 +29,7 @@ import com.github.noamm9.utils.ChatUtils
 import com.github.noamm9.utils.JsonUtils
 import com.github.noamm9.utils.MathUtils
 import com.github.noamm9.utils.PlayerUtils
-import com.github.noamm9.utils.Utils.equalsOneOf
+import com.github.noamm9.utils.equalsOneOf
 import com.github.noamm9.utils.dungeons.DungeonUtils
 import com.github.noamm9.utils.dungeons.map.DungeonInfo
 import com.github.noamm9.utils.dungeons.map.core.Room

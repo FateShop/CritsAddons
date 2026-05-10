@@ -19,10 +19,6 @@ import com.github.noamm9.ui.hud.HudElement
 import com.github.noamm9.ui.utils.Resolution
 import com.github.noamm9.utils.ChatUtils
 import com.github.noamm9.utils.ChatUtils.removeFormatting
-import com.github.noamm9.utils.JsonUtils.getDouble
-import com.github.noamm9.utils.JsonUtils.getInt
-import com.github.noamm9.utils.JsonUtils.getObj
-import com.github.noamm9.utils.JsonUtils.getString
 import com.github.noamm9.utils.NumbersUtils.toFixed
 import com.github.noamm9.utils.PartyUtils
 import com.github.noamm9.utils.dungeons.DungeonListener
@@ -32,13 +28,12 @@ import com.github.noamm9.utils.location.WorldType
 import com.github.noamm9.utils.network.ApiUtils
 import com.github.noamm9.utils.network.ProfileUtils
 import com.github.noamm9.utils.network.cache.ProfileCache
+import com.github.noamm9.utils.network.data.DungeonStats
 import com.github.noamm9.utils.render.Render2D
 import com.github.noamm9.utils.render.Render2D.width
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import net.minecraft.client.gui.screens.ChatScreen
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen
 import org.lwjgl.glfw.GLFW
@@ -97,8 +92,8 @@ object PartyHud: Feature(
     )
 
     private val kickButtonHitboxes = mutableListOf<KickButtonHitbox>()
-    private val pendingProfiles = ConcurrentHashMap<String, Deferred<Result<JsonObject>>>()
-    private val profileOverrides = ConcurrentHashMap<String, JsonObject>()
+    private val pendingProfiles = ConcurrentHashMap<String, Deferred<Result<DungeonStats>>>()
+    private val profileOverrides = ConcurrentHashMap<String, DungeonStats>()
     private val kickColumnWidth = 8f
     private val horizontalPadding = 4f
     private val verticalPadding = 3f
@@ -342,7 +337,7 @@ object PartyHud: Feature(
         return summarize(profile, floor, masterMode)
     }
 
-    private fun requestProfile(playerName: String, forceNetwork: Boolean = false): Deferred<Result<JsonObject>> {
+    private fun requestProfile(playerName: String, forceNetwork: Boolean = false): Deferred<Result<DungeonStats>> {
         val cleanName = cleanName(playerName)
         val key = cleanName.lowercase()
 
@@ -446,29 +441,25 @@ object PartyHud: Feature(
             .distinctBy { it.lowercase() }
     }
 
-    private fun summarize(profile: JsonObject, floor: Int? = null, masterMode: Boolean = false): PartyHudProfileSummary {
-        val dungeons = profile.getObj("dungeons")
-        val totalSecrets = dungeons?.getInt("secrets")
-        val totalRuns = extractTotalRuns(dungeons)
-        val selectedMode = if (masterMode) dungeons?.getObj("master_catacombs") else dungeons?.getObj("catacombs")
-        val classLevels = extractClassLevels(dungeons)
-        val selectedClass = dungeons?.getString("selected_dungeon_class")
-            ?.let(DungeonClass::fromName)
-            ?.takeUnless { it == DungeonClass.Empty }
+    private fun summarize(profile: DungeonStats, floor: Int? = null, masterMode: Boolean = false): PartyHudProfileSummary {
+        val dungeons = profile.dungeons
+        val totalSecrets = dungeons.secrets
+        val totalRuns = extractTotalRuns(profile)
+        val selectedMode = if (masterMode) dungeons.masterCatacombs else dungeons.catacombs
+        val classLevels = extractClassLevels(profile)
+        val selectedClass = null
         val bestClassEntry = classLevels.maxByOrNull { it.value }
 
         return PartyHudProfileSummary(
-            catacombsLevel = dungeons?.getDouble("catacombs_experience")?.let(ApiUtils::getCatacombsLevel),
+            catacombsLevel = profile.cataLevel,
             totalSecrets = totalSecrets,
             totalRuns = totalRuns,
             secretsPerRun = when {
-                totalRuns == null -> null
                 totalRuns == 0 -> 0.0
-                totalSecrets == null -> null
                 else -> totalSecrets.toDouble() / totalRuns.toDouble()
             },
             floorPbMilliseconds = floor?.takeIf { it > 0 }
-                ?.let { selectedMode?.getObj("fastest_time_s_plus")?.getInt("$it") },
+                ?.let { selectedMode.fastestTimeSPlus["$it"]?.toInt() },
             selectedClass = selectedClass,
             selectedClassLevel = selectedClass?.let(classLevels::get),
             bestClass = bestClassEntry?.key,
@@ -480,34 +471,10 @@ object PartyHud: Feature(
 
     private fun cleanName(playerName: String) = playerName.removeFormatting()
 
-    private fun extractTotalRuns(dungeons: JsonObject?): Int? {
-        if (dungeons == null) return null
+    private fun extractTotalRuns(profile: DungeonStats): Int = profile.dungeons.totalRuns
 
-        val normalRuns = extractTierCompletionTotal(dungeons.getObj("catacombs")?.getObj("tier_completions"))
-        val masterRuns = extractTierCompletionTotal(dungeons.getObj("master_catacombs")?.getObj("tier_completions"))
-
-        return if (normalRuns != null || masterRuns != null) {
-            (normalRuns ?: 0) + (masterRuns ?: 0)
-        }
-        else dungeons.getInt("total_runs")
-    }
-
-    private fun extractTierCompletionTotal(completions: JsonObject?): Int? {
-        if (completions == null) return null
-
-        completions.getInt("total")?.let { return it }
-
-        val perFloorValues = completions.entries
-            .mapNotNull { (key, value) -> key.toIntOrNull()?.let { value.jsonPrimitive.content.toIntOrNull() } }
-
-        return perFloorValues.takeIf { it.isNotEmpty() }?.sum()
-    }
-
-    private fun extractClassLevels(dungeons: JsonObject?): Map<DungeonClass, Int> {
-        if (dungeons == null) return emptyMap()
-
-        val playerClasses = dungeons.getObj("player_classes")
-
+    private fun extractClassLevels(profile: DungeonStats): Map<DungeonClass, Int> {
+        val playerClasses = profile.dungeons.playerClasses
         return listOf(
             DungeonClass.Archer to "archer",
             DungeonClass.Berserk to "berserk",
@@ -515,10 +482,7 @@ object PartyHud: Feature(
             DungeonClass.Mage to "mage",
             DungeonClass.Tank to "tank",
         ).mapNotNull { (dungeonClass, key) ->
-            val experience = playerClasses?.getDouble(key)
-                ?: playerClasses?.getObj(key)?.getDouble("experience")
-                ?: dungeons.getDouble("${key}_experience")
-                ?: return@mapNotNull null
+            val experience = playerClasses[key] ?: return@mapNotNull null
             dungeonClass to ApiUtils.getCatacombsLevel(experience)
         }.toMap()
     }

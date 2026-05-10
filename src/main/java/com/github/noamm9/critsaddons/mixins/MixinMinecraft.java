@@ -1,7 +1,7 @@
 package com.github.noamm9.critsaddons.mixins;
 
 import com.github.noamm9.NoammAddons;
-import com.github.noamm9.ui.clickgui.CategoryType;
+import com.github.noamm9.ui.clickgui.enums.CategoryType;
 import kotlin.enums.EnumEntriesKt;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;

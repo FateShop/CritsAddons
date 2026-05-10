@@ -1,6 +1,6 @@
 # CritsAddons 1.21.10
 
-Addon features for NoammAddons on Minecraft 1.21.10. Current mod version: `1.2.2`.
+Addon features for NoammAddons on Minecraft 1.21.10. Current mod version: `1.3.2`.
 
 ## What Is This
 

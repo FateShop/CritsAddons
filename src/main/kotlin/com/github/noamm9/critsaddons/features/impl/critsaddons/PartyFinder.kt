@@ -13,24 +13,23 @@ import com.github.noamm9.utils.ChatUtils
 import com.github.noamm9.utils.ChatUtils.addColor
 import com.github.noamm9.utils.ChatUtils.formattedText
 import com.github.noamm9.utils.ChatUtils.removeFormatting
-import com.github.noamm9.utils.JsonUtils.getArray
 import com.github.noamm9.utils.JsonUtils.getDouble
 import com.github.noamm9.utils.JsonUtils.getInt
 import com.github.noamm9.utils.JsonUtils.getObj
-import com.github.noamm9.utils.JsonUtils.getString
 import com.github.noamm9.utils.NumbersUtils.romanToDecimal
 import com.github.noamm9.utils.NumbersUtils.toFixed
 import com.github.noamm9.utils.PartyUtils
 import com.github.noamm9.utils.TabListUtils
 import com.github.noamm9.utils.ThreadUtils
-import com.github.noamm9.utils.Utils.equalsOneOf
-import com.github.noamm9.utils.Utils.uppercaseFirst
 import com.github.noamm9.utils.dungeons.enums.DungeonClass
+import com.github.noamm9.utils.equalsOneOf
 import com.github.noamm9.utils.items.ItemRarity
 import com.github.noamm9.utils.items.ItemUtils.lore
 import com.github.noamm9.utils.network.ApiUtils
 import com.github.noamm9.utils.network.ProfileUtils
 import com.github.noamm9.utils.network.cache.ProfileCache
+import com.github.noamm9.utils.network.data.DungeonStats
+import com.github.noamm9.utils.uppercaseFirst
 import com.github.noamm9.utils.render.Render2D
 import com.github.noamm9.utils.render.Render2D.width
 import com.mojang.brigadier.arguments.StringArgumentType
@@ -38,9 +37,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.double
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback
@@ -77,7 +73,7 @@ object PartyFinder: Feature() {
 
     private val joinedRegex = Regex("^§dParty Finder §f> (.+?) §ejoined the dungeon group! \\(§b(\\w+) Level (\\d+)§e\\)$")
     private val kickedPlayers = mutableSetOf<String>()
-    private val pendingProfiles = ConcurrentHashMap<String, Deferred<Result<JsonObject>>>()
+    private val pendingProfiles = ConcurrentHashMap<String, Deferred<Result<DungeonStats>>>()
     private val partyMemberClasses = mutableMapOf<String, DungeonClass>()
     private const val prefix = "&9AutoKick &f>"
 
@@ -290,29 +286,23 @@ object PartyFinder: Feature() {
         val cleanName = name.removeFormatting()
 
         val data = ProfileUtils.getProfile(cleanName).getOrNull() ?: return
-        val dungeons = data.getObj("dungeons") ?: return
-        val catacombs = dungeons.getObj("catacombs")
-        val masterCatacombs = dungeons.getObj("master_catacombs")
+        val catacombs = data.dungeons.catacombs
+        val masterCatacombs = data.dungeons.masterCatacombs
 
-        val selectedArrow = data.getString("favorite_arrow")?.lowercase()?.split("_")?.joinToString(" ") { it.uppercaseFirst() }
-        val powerStone = data.getString("selected_power")?.lowercase()?.split("_")?.joinToString(" ") { it.uppercaseFirst() }
+        val selectedArrow = data.favoriteArrow.lowercase().split("_").joinToString(" ") { it.uppercaseFirst() }
+        val powerStone = data.selectedPower.lowercase().split("_").joinToString(" ") { it.uppercaseFirst() }
 
-        val bloodMobsKilled = data.getInt("blood_mobs_killed") ?: 0
-        val totalSecrets = dungeons.getInt("secrets")?.toDouble() ?: .0
-        val totalRuns = dungeons.getInt("total_runs")?.toDouble() ?: .0
+        val bloodMobsKilled = data.bloodMobsKilled
+        val totalSecrets = data.dungeons.secrets.toDouble()
+        val totalRuns = data.dungeons.totalRuns.toDouble()
         val secretAvg = if (totalRuns > 0) totalSecrets / totalRuns else .0
 
-        val cataLvl = dungeons.getDouble("catacombs_experience")?.let(ApiUtils::getCatacombsLevel) ?: return
-        val classAvg = dungeons.getObj("player_classes")?.values
-            ?.mapNotNull { element -> runCatching { ApiUtils.getCatacombsLevel(element.jsonPrimitive.double) }.getOrNull()?.toDouble() }
-            ?.takeUnless(Collection<*>::isEmpty)
-            ?.average()
-            ?: return
+        val cataLvl = data.cataLevel
+        val classAvg = data.classAverage
 
-        val pets = data.getArray("pets")?.mapNotNull { element ->
-            val petObject = element.jsonObject
-            val tier = petObject.getString("tier") ?: return@mapNotNull null
-            val type = petObject.getString("type") ?: return@mapNotNull null
+        val pets = data.pets.mapNotNull { pet ->
+            val tier = pet.tier
+            val type = pet.type
             val rarity = runCatching { ItemRarity.valueOf(tier) }.getOrNull() ?: return@mapNotNull null
             val formattedType = when {
                 type.endsWith("_DRAGON") -> if (type.startsWith("GOLDEN")) "Gdrag" else "Edrag"
@@ -320,15 +310,15 @@ object PartyFinder: Feature() {
                 else -> type.lowercase().split("_").joinToString(" ") { it.uppercaseFirst() }
             }
             rarity.baseColor.toString() to formattedType
-        }?.toSet().orEmpty()
+        }.toSet()
 
         val completionComponents = listOfNotNull(
-            catacombs?.getObj("tier_completions")?.let { completionObj ->
+            catacombs.tierCompletions.let { completionObj ->
                 val highestFloor = completionObj.keys.mapNotNull(String::toIntOrNull).maxOrNull() ?: return@let null
-                val header = "  &aFloor Completions &7(F$highestFloor): ${catacombs.getObj("fastest_time_s_plus")?.getInt("$highestFloor")?.let(::formatTime) ?: "N/A"}"
+                val header = "  &aFloor Completions &7(F$highestFloor): ${catacombs.fastestTimeSPlus["$highestFloor"]?.let(::formatTime) ?: "N/A"}"
                 val hover = (0 .. highestFloor).joinToString("\n") { floor ->
-                    val completions = completionObj.getInt("$floor")
-                    val pb = catacombs.getObj("fastest_time_s_plus")?.getInt("$floor")?.let(::formatTime) ?: "&cNo Comp"
+                    val completions = completionObj["$floor"]
+                    val pb = catacombs.fastestTimeSPlus["$floor"]?.let(::formatTime) ?: "&cNo Comp"
                     val floorName = if (floor == 0) "Entrance" else floor.toString()
                     "&2&l*&a Floor $floorName: ${completions?.let { "&e$it &7(&6S+ &e$pb&7)" } ?: "&cDNF"}"
                 }
@@ -337,12 +327,12 @@ object PartyFinder: Feature() {
                     it.withHoverEvent(HoverEvent.ShowText(Component.literal(hover.addColor())))
                 }
             },
-            masterCatacombs?.getObj("tier_completions")?.let { completionObj ->
+            masterCatacombs.tierCompletions.let { completionObj ->
                 val highestFloor = completionObj.keys.mapNotNull(String::toIntOrNull).maxOrNull() ?: return@let null
-                val header = "  &l&4Master Completions &7(M$highestFloor): ${masterCatacombs.getObj("fastest_time_s_plus")?.getInt("$highestFloor")?.let(::formatTime) ?: "N/A"}"
+                val header = "  &l&4Master Completions &7(M$highestFloor): ${masterCatacombs.fastestTimeSPlus["$highestFloor"]?.let(::formatTime) ?: "N/A"}"
                 val hover = (1 .. highestFloor).joinToString("\n") { floor ->
-                    val completions = completionObj.getInt("$floor")
-                    val pb = masterCatacombs.getObj("fastest_time_s_plus")?.getInt("$floor")?.let(::formatTime) ?: "&cNo Comp"
+                    val completions = completionObj["$floor"]
+                    val pb = masterCatacombs.fastestTimeSPlus["$floor"]?.let(::formatTime) ?: "&cNo Comp"
                     "&c&l*&4 Floor $floor: ${completions?.let { "&e$it &7(&6S+ &e$pb&7)" } ?: "&cDNF"}"
                 }
 
@@ -502,13 +492,13 @@ object PartyFinder: Feature() {
         return loadProfile(playerName).getOrNull()?.let { summarize(it, floor, masterMode) }
     }
 
-    private suspend fun loadProfile(playerName: String): Result<JsonObject> {
+    private suspend fun loadProfile(playerName: String): Result<DungeonStats> {
         val key = cacheKey(playerName)
         ProfileCache.getFromCache(key)?.let { return Result.success(it) }
         return pendingProfiles[key]?.await() ?: requestProfile(playerName).await()
     }
 
-    private fun requestProfile(playerName: String): Deferred<Result<JsonObject>> {
+    private fun requestProfile(playerName: String): Deferred<Result<DungeonStats>> {
         val cleanName = cleanName(playerName)
         val key = cleanName.lowercase()
 
@@ -526,24 +516,22 @@ object PartyFinder: Feature() {
         }
     }
 
-    private fun summarize(profile: JsonObject, floor: Int? = null, masterMode: Boolean = false): DungeonProfileSummary {
-        val dungeons = profile.getObj("dungeons")
-        val totalSecrets = dungeons?.getInt("secrets")
-        val totalRuns = extractTotalRuns(dungeons)
-        val selectedMode = if (masterMode) dungeons?.getObj("master_catacombs") else dungeons?.getObj("catacombs")
+    private fun summarize(profile: DungeonStats, floor: Int? = null, masterMode: Boolean = false): DungeonProfileSummary {
+        val dungeons = profile.dungeons
+        val totalSecrets = dungeons.secrets
+        val totalRuns = extractTotalRuns(profile)
+        val selectedMode = if (masterMode) dungeons.masterCatacombs else dungeons.catacombs
 
         return DungeonProfileSummary(
-            catacombsLevel = dungeons?.getDouble("catacombs_experience")?.let(ApiUtils::getCatacombsLevel),
+            catacombsLevel = profile.cataLevel,
             totalSecrets = totalSecrets,
             totalRuns = totalRuns,
             secretsPerRun = when {
-                totalRuns == null -> null
                 totalRuns == 0 -> 0.0
-                totalSecrets == null -> null
                 else -> totalSecrets.toDouble() / totalRuns.toDouble()
             },
             floorPbMilliseconds = floor?.takeIf { it > 0 }
-                ?.let { selectedMode?.getObj("fastest_time_s_plus")?.getInt("$it") },
+                ?.let { selectedMode.fastestTimeSPlus["$it"]?.toInt() },
         )
     }
 
@@ -551,28 +539,8 @@ object PartyFinder: Feature() {
 
     private fun cleanName(playerName: String) = playerName.removeFormatting()
 
-    private fun extractTotalRuns(dungeons: JsonObject?): Int? {
-        if (dungeons == null) return null
+    private fun extractTotalRuns(profile: DungeonStats): Int = profile.dungeons.totalRuns
 
-        val normalRuns = extractTierCompletionTotal(dungeons.getObj("catacombs")?.getObj("tier_completions"))
-        val masterRuns = extractTierCompletionTotal(dungeons.getObj("master_catacombs")?.getObj("tier_completions"))
-
-        return if (normalRuns != null || masterRuns != null) {
-            (normalRuns ?: 0) + (masterRuns ?: 0)
-        }
-        else dungeons.getInt("total_runs")
-    }
-
-    private fun extractTierCompletionTotal(completions: JsonObject?): Int? {
-        if (completions == null) return null
-
-        completions.getInt("total")?.let { return it }
-
-        val perFloorValues = completions.entries
-            .mapNotNull { (key, value) -> key.toIntOrNull()?.let { value.jsonPrimitive.content.toIntOrNull() } }
-
-        return perFloorValues.takeIf { it.isNotEmpty() }?.sum()
-    }
 }
 
 data class PartyFinderRuleConfig(

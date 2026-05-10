@@ -68,7 +68,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     include("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    modImplementation("com.github.Noamm9.NoammAddons:${project.property("noammaddons_type")}:${project.property("noammaddons_version")}")
+    modImplementation("com.github.Noamm9:NoammAddons:${project.property("noammaddons_version")}:${project.property("noammaddons_type")}")
 
     testImplementation(kotlin("test"))
 }
@@ -90,20 +90,16 @@ tasks.register("setNoammAddonsVersion") {
 
 tasks.register("syncNoammAddonsVersion") {
     group = "automation"
-    description = "Fetches latest commit SHA for NoammAddons branch (defaults to noammaddons_type) and updates noammaddons_version."
+    description = "Fetches the latest published NoammAddons release from JitPack and updates noammaddons_version."
 
     doLast {
         val owner = (findProperty("noammRepoOwner") as String?)?.trim().orEmpty().ifBlank { "Noamm9" }
         val repo = (findProperty("noammRepoName") as String?)?.trim().orEmpty().ifBlank { "NoammAddons" }
-        val branch = (findProperty("noammBranch") as String?)?.trim().orEmpty().ifBlank {
-            (findProperty("noammaddons_type") as String).trim()
-        }
-        val shaLength = (findProperty("noammShaLength") as String?)?.toIntOrNull() ?: 10
 
-        val apiUrl = URI("https://api.github.com/repos/$owner/$repo/commits/$branch").toURL()
+        val apiUrl = URI("https://jitpack.io/com/github/$owner/$repo/maven-metadata.xml").toURL()
         val connection = (apiUrl.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("Accept", "application/xml")
             setRequestProperty("User-Agent", "CritsAddons-Gradle")
             connectTimeout = 10_000
             readTimeout = 10_000
@@ -118,18 +114,19 @@ tasks.register("syncNoammAddonsVersion") {
 
         val (statusCode, body) = response
         if (statusCode !in 200..299) {
-            error("GitHub API request failed ($statusCode): $body")
+            error("JitPack metadata request failed ($statusCode): $body")
         }
 
-        val sha = Regex("\"sha\"\\s*:\\s*\"([0-9a-f]{40})\"")
+        val latestVersion = Regex("<release>\\s*([^<]+)\\s*</release>")
             .find(body)
             ?.groupValues
             ?.get(1)
-            ?: error("Could not parse commit SHA from GitHub response.")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: error("Could not parse release version from JitPack metadata.")
 
-        val finalVersion = sha.take(shaLength.coerceIn(7, 40))
-        updateGradleProperty("noammaddons_version", finalVersion)
-        logger.lifecycle("Updated noammaddons_version=$finalVersion from $owner/$repo branch '$branch'")
+        updateGradleProperty("noammaddons_version", latestVersion)
+        logger.lifecycle("Updated noammaddons_version=$latestVersion from JitPack $owner/$repo metadata")
     }
 }
 

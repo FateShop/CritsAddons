@@ -30,7 +30,7 @@ object M3FFDisplay : Feature(
 
         override fun draw(ctx: net.minecraft.client.gui.GuiGraphics, example: Boolean): Pair<Float, Float> {
             val lines = if (example) {
-                listOf("&bM3 FF", "&eFire Freeze in 5.00")
+                listOf("&eFire Freeze in 5.00")
             } else {
                 activeState() ?: return 0f to 0f
             }
