@@ -108,6 +108,14 @@ object PersistentSecretHeads : Feature(
             ?.pos
     }
 
+    fun isPersistentGhostHead(pos: BlockPos): Boolean {
+        return currentHeads.any { waypoint ->
+            waypoint.pos == pos &&
+                waypoint.type in persistentHeadTypes &&
+                WorldUtils.getBlockAt(pos) != Blocks.PLAYER_HEAD
+        }
+    }
+
     fun hasSpawnedBatInCurrentRoom(): Boolean {
         val level = NoammAddons.mc.level ?: return false
         if (currentBatSecrets.isEmpty()) return false

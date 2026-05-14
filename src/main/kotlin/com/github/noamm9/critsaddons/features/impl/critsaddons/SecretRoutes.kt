@@ -29,6 +29,8 @@ import com.github.noamm9.utils.ChatUtils
 import com.github.noamm9.utils.JsonUtils
 import com.github.noamm9.utils.MathUtils
 import com.github.noamm9.utils.PlayerUtils
+import com.github.noamm9.utils.ThreadUtils
+import com.github.noamm9.utils.WorldUtils
 import com.github.noamm9.utils.equalsOneOf
 import com.github.noamm9.utils.dungeons.DungeonUtils
 import com.github.noamm9.utils.dungeons.map.DungeonInfo
@@ -68,12 +70,14 @@ object SecretRoutes : Feature(
     toggled = true
 ) {
     private const val INTERACT_DELAY_MS = 75L
+    private const val HOTBAR_SETTLE_TIMEOUT_MS = 250L
     private const val WARP_SETTLE_TIMEOUT_MS = 3_000L
     private const val MANA_CHECK_INTERVAL_MS = 100L
     private const val BLOCK_MESSAGE_COOLDOWN_MS = 1_000L
     private const val BREAK_RECORD_COOLDOWN_MS = 300L
     private const val BREAK_STEP_DELAY_MS = 100L
     private const val TNT_RECORD_COOLDOWN_MS = 300L
+    private const val AUTO_START_ROOM_STABLE_MS = 350L
     private const val AUTO_START_CENTER_TOLERANCE = 0.05
     private const val START_LINK_MAX_HOPS = 64
     private const val KEYBINDS_SECTION = "keybinds"
@@ -108,6 +112,9 @@ object SecretRoutes : Feature(
         .withDescription("0 = exact center, 1 = nearly anywhere on the block.")
     private val startRouteFromAnywhere by ToggleSetting("Start Route From Anywhere", false)
         .withDescription("Lets playback start from a centered recorded route step block, such as EW 18.")
+    private val continueSecretClickOnRaytraceMiss by ToggleSetting("Continue Secret Click Raytrace Miss", true)
+        .section(PLAYBACK_SECTION)
+        .withDescription("Warns and still right-clicks when a secret-click raytrace validation misses.")
     private val renderStart by ToggleSetting("Show Start Block", true).section(RENDER_SECTION)
     private val renderEnd by ToggleSetting("Show End Blocks", true)
     private val renderThroughWalls by ToggleSetting("Render Through Walls", true)
@@ -115,6 +122,9 @@ object SecretRoutes : Feature(
     private val startBlockColor by ColorSetting("Start Block Color", Color(80, 220, 255, 120), true).showIf { renderStart.value }
     private val endBlockColor by ColorSetting("End Block Color", Color(255, 210, 85, 120), true).showIf { renderEnd.value }
     private val endHelperBlockColor by ColorSetting("End Helper Color", Color(255, 245, 140, 120), true).showIf { renderEnd.value }
+    private val doorwayLinkColor by ColorSetting("Door Link Color", Color(255, 255, 255, 170), true)
+        .section(RENDER_SECTION)
+        .showIf { renderEnd.value }
     private val renderEtherwarpLines by ToggleSetting("Show Etherwarp Lines", true)
     private val etherwarpLineColor by ColorSetting("Etherwarp Line Color", Color(85, 255, 255, 180), true).showIf { renderEtherwarpLines.value }
     private val etherwarpLineWidth by SliderSetting("Etherwarp Line Width", 2.5f, 1f, 8f, 0.1f).showIf { renderEtherwarpLines.value }
@@ -156,7 +166,9 @@ object SecretRoutes : Feature(
         val direction: Direction? = null,
         val secondaryPos: BlockPos? = null,
         val yaw: Float? = null,
-        val pitch: Float? = null
+        val pitch: Float? = null,
+        val requiresRaytrace: Boolean = false,
+        val ignoreRaytrace: Boolean = false
     )
 
     private data class StartLink(
@@ -175,13 +187,26 @@ object SecretRoutes : Feature(
         val pitch: Float? = null
     )
 
+    private data class DoorwayLink(
+        val from: BlockPos,
+        val to: BlockPos,
+        val steps: MutableList<RouteStep> = mutableListOf()
+    )
+
     private data class RoomRoute(
         val startBlock: BlockPos,
         val steps: MutableList<RouteStep> = mutableListOf(),
         val startLinks: MutableList<StartLink>? = null,
         val endLinks: MutableList<EndLink>? = null,
         val endBlocks: MutableList<BlockPos>? = null,
-        val endHelperBlocks: MutableList<BlockPos>? = null
+        val endHelperBlocks: MutableList<BlockPos>? = null,
+        val doorwayLinks: MutableList<DoorwayLink>? = null
+    )
+
+    data class DoorwayLinkStats(
+        val linked: Int,
+        val possible: Int,
+        val endBlocks: Int
     )
 
     private data class RecordingSession(
@@ -205,6 +230,12 @@ object SecretRoutes : Feature(
         val roomName: String,
         val sourceEnd: BlockPos,
         val type: EndLinkRecordingType
+    )
+
+    private data class DoorwayLinkRecordingSession(
+        val roomName: String,
+        val sourceEnd: BlockPos,
+        val steps: MutableList<RouteStep> = mutableListOf()
     )
 
     private data class NextRoomRecordingSession(
@@ -276,6 +307,7 @@ object SecretRoutes : Feature(
     private var recording: RecordingSession? = null
     private var startLinkRecording: StartLinkRecordingSession? = null
     private var endLinkRecording: EndLinkRecordingSession? = null
+    private var doorwayLinkRecording: DoorwayLinkRecordingSession? = null
     private var nextRoomRecording: NextRoomRecordingSession? = null
     private var playbackJob: Job? = null
     private var activePlaybackRoomName: String? = null
@@ -289,6 +321,10 @@ object SecretRoutes : Feature(
     private var recordingPaused = false
     private var activeRoutesConfigPath: String? = null
     private var nextRoomLinkProfile: NextRoomLinkProfile? = null
+    private var nextEtherwarpRequiresRaytrace = false
+    private var heldSneakRestoreState: Boolean? = null
+    private var lastResolvedRoom: UniqueRoom? = null
+    private var lastResolvedRoomSince = 0L
 
     override fun init() {
         CritsAddonsDefaults.install()
@@ -320,9 +356,9 @@ object SecretRoutes : Feature(
 
         register<RenderWorldEvent> {
             if (!LocationUtils.inDungeon || LocationUtils.inBoss) return@register
-            val ctx = currentRoomContext() ?: return@register
-            val route = routes[ctx.room.name] ?: return@register
-            renderRoute(event, ctx, route)
+            renderableRouteContexts().forEach { (ctx, route) ->
+                renderRoute(event, ctx, route)
+            }
         }
 
         register<DungeonEvent.SecretEvent> {
@@ -337,6 +373,13 @@ object SecretRoutes : Feature(
             }
 
             if (recordNextRoomLink()) return@register
+
+            if (isDoorwayLinkRecordingCurrentRoom()) {
+                if (recordDoorwayLinkStep()) return@register
+                event.isCanceled = true
+                blockMessage("Only etherwarps are allowed while /nsr link recording is active.")
+                return@register
+            }
 
             if (isLinkRecordingCurrentRoom()) {
                 if (recordLinkStep()) return@register
@@ -360,6 +403,13 @@ object SecretRoutes : Feature(
             }
 
             if (recordNextRoomLink()) return@register
+
+            if (isDoorwayLinkRecordingCurrentRoom()) {
+                if (recordDoorwayLinkStep()) return@register
+                event.isCanceled = true
+                blockMessage("Only etherwarps are allowed while /nsr link recording is active.")
+                return@register
+            }
 
             if (isLinkRecordingCurrentRoom()) {
                 if (recordLinkStep()) return@register
@@ -393,6 +443,11 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.RIGHT_CLICK.ENTITY>(EventPriority.HIGHEST) {
+            if (isDoorwayLinkRecordingCurrentRoom()) {
+                event.isCanceled = true
+                blockMessage("Entity interactions are blocked while /nsr link recording is active.")
+                return@register
+            }
             if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
                 blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
@@ -404,6 +459,11 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.LEFT_CLICK.AIR>(EventPriority.HIGHEST) {
+            if (isDoorwayLinkRecordingCurrentRoom()) {
+                event.isCanceled = true
+                blockMessage("Only etherwarps are allowed while /nsr link recording is active.")
+                return@register
+            }
             if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
                 blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
@@ -415,6 +475,11 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.LEFT_CLICK.ENTITY>(EventPriority.HIGHEST) {
+            if (isDoorwayLinkRecordingCurrentRoom()) {
+                event.isCanceled = true
+                blockMessage("Entity attacks are blocked while /nsr link recording is active.")
+                return@register
+            }
             if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
                 blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
@@ -426,6 +491,11 @@ object SecretRoutes : Feature(
         }
 
         register<PlayerInteractEvent.LEFT_CLICK.BLOCK>(EventPriority.HIGHEST) {
+            if (isDoorwayLinkRecordingCurrentRoom()) {
+                event.isCanceled = true
+                blockMessage("Only etherwarps are allowed while /nsr link recording is active.")
+                return@register
+            }
             if (isLinkRecordingCurrentRoom()) {
                 event.isCanceled = true
                 blockMessage("Only one etherwarp is allowed while /nsr start or /nsr end recording is active.")
@@ -444,6 +514,7 @@ object SecretRoutes : Feature(
         }
 
         register<PacketEvent.Sent>(EventPriority.HIGHEST) {
+            if (isDoorwayLinkRecordingCurrentRoom()) return@register
             if (isLinkRecordingCurrentRoom()) return@register
             if (!isRecordingCurrentRoom()) return@register
             val packet = event.packet as? ServerboundUseItemOnPacket ?: return@register
@@ -457,7 +528,8 @@ object SecretRoutes : Feature(
                     RouteStep(
                         type = RouteStepType.RIGHT_CLICK_SECRET,
                         pos = currentRelativePos(clicked),
-                        direction = direction
+                        direction = direction,
+                        ignoreRaytrace = consumeRaytraceMarkerForRightClick()
                     )
                 )
             }
@@ -482,6 +554,12 @@ object SecretRoutes : Feature(
         }
 
         register<DungeonEvent.RoomEvent.onExit> {
+            val session = doorwayLinkRecording ?: return@register
+            if (session.roomName != event.room.name) return@register
+            cancelRecording("Left ${event.room.name}; /nsr link recording canceled.")
+        }
+
+        register<DungeonEvent.RoomEvent.onExit> {
             val session = nextRoomRecording ?: return@register
             if (session.sourceRoomName != event.room.name) return@register
             cancelRecording("Left ${event.room.name}; /nsr next recording canceled.")
@@ -500,10 +578,13 @@ object SecretRoutes : Feature(
             recording = null
             startLinkRecording = null
             endLinkRecording = null
+            doorwayLinkRecording = null
             lastBreakRecord = null
             lastTntRecord = null
             lastAutoStartAt = 0L
             lastAutoStartBlock = null
+            lastResolvedRoom = null
+            lastResolvedRoomSince = 0L
             resetCenterHoldState()
             recordingPaused = false
             clearSecretProgressCache()
@@ -517,6 +598,7 @@ object SecretRoutes : Feature(
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
         if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr link recording first.")
         stopPlayback()
 
         val startBlock = mc.player?.blockPosition()?.below() ?: return ChatUtils.modMessage("&cCould not resolve your starting block.")
@@ -534,6 +616,7 @@ object SecretRoutes : Feature(
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
         if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr link recording first.")
         stopPlayback()
 
         val route = routes[ctx.room.name]
@@ -561,6 +644,7 @@ object SecretRoutes : Feature(
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cA /nsr start recording is already active.")
         if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr link recording first.")
         stopPlayback()
 
         val route = routes[ctx.room.name]
@@ -584,6 +668,7 @@ object SecretRoutes : Feature(
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
         if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr link recording first.")
         if (nextRoomRecording != null) return ChatUtils.modMessage("&cA /nsr next recording is already active.")
         stopPlayback()
 
@@ -669,11 +754,15 @@ object SecretRoutes : Feature(
         val updatedHelpers = route.endHelperBlocks.orEmpty()
             .filterNot { it in removedNodes }
             .toMutableList()
+        val updatedDoorwayLinks = route.doorwayLinks.orEmpty()
+            .filterNot { link -> removedNodes.any { doorwayLinkContains(link, it) } }
+            .toMutableList()
 
         routes[ctx.room.name] = route.copy(
             endLinks = updatedLinks,
             endBlocks = updatedEnds,
-            endHelperBlocks = updatedHelpers
+            endHelperBlocks = updatedHelpers,
+            doorwayLinks = updatedDoorwayLinks
         )
         saveConfig()
 
@@ -693,6 +782,9 @@ object SecretRoutes : Feature(
         if (endLinkRecording != null) {
             return ChatUtils.modMessage("&e/nsr end auto-saves after one valid etherwarp. Use &b/nsr cancel&e to cancel it.")
         }
+        if (doorwayLinkRecording != null) {
+            return ChatUtils.modMessage("&e/nsr link auto-saves when you land on another real end block. Use &b/nsr cancel&e to cancel it.")
+        }
         val session = recording ?: return ChatUtils.modMessage("&cNo Secret Route recording is active.")
         if (session.steps.isEmpty()) return ChatUtils.modMessage("&cNo steps recorded for ${session.roomName}.")
 
@@ -701,6 +793,7 @@ object SecretRoutes : Feature(
         val existingEndLinks = previousRoute?.endLinks.orEmpty().toMutableList()
         val existingEndBlocks = previousRoute?.endBlocks.orEmpty().toMutableList()
         val existingEndHelpers = previousRoute?.endHelperBlocks.orEmpty().toMutableList()
+        val existingDoorwayLinks = previousRoute?.doorwayLinks.orEmpty().toMutableList()
 
         routes[session.roomName] = RoomRoute(
             startBlock = session.startBlock,
@@ -708,7 +801,8 @@ object SecretRoutes : Feature(
             startLinks = existingStartLinks,
             endLinks = existingEndLinks,
             endBlocks = existingEndBlocks,
-            endHelperBlocks = existingEndHelpers
+            endHelperBlocks = existingEndHelpers,
+            doorwayLinks = existingDoorwayLinks
         )
 
         saveConfig()
@@ -722,17 +816,27 @@ object SecretRoutes : Feature(
         )
     }
 
-    fun markCurrentRoomCompleted() {
+    fun markCurrentRoomCompleted(completed: Boolean = true) {
         val ctx = currentRoomContext()
             ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to use /nsr complete.")
         val roomName = ctx.room.name
 
-        if (!completedRooms.add(roomName)) {
-            return ChatUtils.modMessage("&e$roomName is already marked completed.")
+        if (completed) {
+            if (!completedRooms.add(roomName)) {
+                return ChatUtils.modMessage("&e$roomName is already marked completed.")
+            }
+
+            saveConfig()
+            ChatUtils.modMessage("&aMarked &e$roomName&a as completed in Secret Routes.")
+            return
+        }
+
+        if (!completedRooms.remove(roomName)) {
+            return ChatUtils.modMessage("&e$roomName is already marked not completed.")
         }
 
         saveConfig()
-        ChatUtils.modMessage("&aMarked &e$roomName&a as completed in Secret Routes.")
+        ChatUtils.modMessage("&cMarked &e$roomName&c as not completed in Secret Routes.")
     }
 
     fun getCompletedRoomNames(): Set<String> = completedRooms.toSet()
@@ -742,6 +846,18 @@ object SecretRoutes : Feature(
         names.addAll(routes.keys)
         names.addAll(completedRooms)
         return names
+    }
+
+    fun getDoorwayLinkStats(roomName: String): DoorwayLinkStats {
+        val route = routes[roomName] ?: return DoorwayLinkStats(0, 0, 0)
+        val endBlocks = route.endBlocks.orEmpty().toSet()
+        val possibleLinks = endBlocks.size * (endBlocks.size - 1).coerceAtLeast(0)
+        val linked = route.doorwayLinks.orEmpty()
+            .asSequence()
+            .filter { it.from != it.to && it.from in endBlocks && it.to in endBlocks }
+            .distinctBy { it.from to it.to }
+            .count()
+        return DoorwayLinkStats(linked, possibleLinks, endBlocks.size)
     }
 
     fun isRoomMarkedCompleted(roomName: String): Boolean = completedRooms.contains(roomName)
@@ -756,11 +872,63 @@ object SecretRoutes : Feature(
         startEndLinkRecording(EndLinkRecordingType.HELPER)
     }
 
+    fun startDoorwayLinkRecording() {
+        val ctx = currentRoomContext()
+            ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to start /nsr link.")
+        if (!completedRooms.contains(ctx.room.name)) {
+            return ChatUtils.modMessage("&c/nsr link only works in rooms marked completed with &b/nsr complete&c.")
+        }
+        if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
+        if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
+        if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording first.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cA /nsr link recording is already active.")
+        stopPlayback()
+
+        val route = routes[ctx.room.name]
+            ?: return ChatUtils.modMessage("&cNo Secret Route saved for &e${ctx.room.name}&c.")
+        val worldBlock = mc.player?.blockPosition()?.below()
+            ?: return ChatUtils.modMessage("&cCould not resolve your current block.")
+        if (!isCenteredOnBlock(worldBlock)) {
+            return ChatUtils.modMessage("&cStand in the center of the end block before starting &b/nsr link&c.")
+        }
+
+        val relative = toRelative(worldBlock, ctx)
+        if (!isRealDoorEndBlock(route, relative)) {
+            return ChatUtils.modMessage("&c/nsr link must start on a real end block, not the OG end or an end helper.")
+        }
+
+        doorwayLinkRecording = DoorwayLinkRecordingSession(ctx.room.name, relative)
+        ChatUtils.modMessage("&aStarted /nsr link for &e${ctx.room.name}&a. Etherwarp to another real end block to auto-save.")
+    }
+
+    fun deleteDoorwayLinkFromCurrentBlock() {
+        val ctx = currentRoomContext()
+            ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to delete a /nsr link.")
+        val route = routes[ctx.room.name]
+            ?: return ChatUtils.modMessage("&cNo Secret Route saved for &e${ctx.room.name}&c.")
+        val worldBlock = mc.player?.blockPosition()?.below()
+            ?: return ChatUtils.modMessage("&cCould not resolve your current block.")
+        if (!isCenteredOnBlock(worldBlock)) {
+            return ChatUtils.modMessage("&cStand in the center of a link block before using &b/nsr link delete&c.")
+        }
+
+        val relative = toRelative(worldBlock, ctx)
+        val existing = route.doorwayLinks.orEmpty()
+        val kept = existing.filterNot { link -> doorwayLinkContains(link, relative) }.toMutableList()
+        val removed = existing.size - kept.size
+        if (removed <= 0) return ChatUtils.modMessage("&cNo /nsr link contains this block.")
+
+        routes[ctx.room.name] = route.copy(doorwayLinks = kept)
+        saveConfig()
+        ChatUtils.modMessage("&aDeleted &e$removed&a /nsr link${if (removed == 1) "" else "s"} for &e${ctx.room.name}&a.")
+    }
+
     private fun startEndLinkRecording(type: EndLinkRecordingType) {
         val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to start /nsr end recording.")
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording first.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording first.")
         if (endLinkRecording != null) return ChatUtils.modMessage("&cA /nsr end recording is already active.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr link recording first.")
         stopPlayback()
 
         val route = routes[ctx.room.name]
@@ -782,11 +950,13 @@ object SecretRoutes : Feature(
     }
 
     fun cancelRecording(message: String? = null) {
-        if (recording == null && startLinkRecording == null && endLinkRecording == null && nextRoomRecording == null) return
+        if (recording == null && startLinkRecording == null && endLinkRecording == null && doorwayLinkRecording == null && nextRoomRecording == null) return
         recording = null
         startLinkRecording = null
         endLinkRecording = null
+        doorwayLinkRecording = null
         nextRoomRecording = null
+        nextEtherwarpRequiresRaytrace = false
         lastBreakRecord = null
         lastTntRecord = null
         ChatUtils.modMessage("&e${message ?: "Secret Route recording canceled."}")
@@ -800,6 +970,12 @@ object SecretRoutes : Feature(
     fun insertBatWaitStep() {
         if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first before adding a bat wait step.")
         appendStep(RouteStep(RouteStepType.WAIT_FOR_BAT_SPAWN))
+    }
+
+    fun requireRaytraceForNextEtherwarp() {
+        if (!isRecordingCurrentRoom()) return ChatUtils.modMessage("&cStart /nsr first (or /nsr continue) before using /nsr raytrace.")
+        nextEtherwarpRequiresRaytrace = true
+        ChatUtils.modMessage("&aThe next recorded etherwarp will require raytrace validation. If your next action is a right-click secret, that step will skip raytrace validation instead.")
     }
 
     fun addEtherwarpStep() {
@@ -836,7 +1012,14 @@ object SecretRoutes : Feature(
         if (!isRouteRightClickTarget(pos)) {
             return ChatUtils.modMessage("&cTarget block is not a valid secret interaction block.")
         }
-        appendStep(RouteStep(RouteStepType.RIGHT_CLICK_SECRET, currentRelativePos(pos), direction = hit.direction))
+        appendStep(
+            RouteStep(
+                RouteStepType.RIGHT_CLICK_SECRET,
+                currentRelativePos(pos),
+                direction = hit.direction,
+                ignoreRaytrace = consumeRaytraceMarkerForRightClick()
+            )
+        )
     }
 
     fun deleteCurrentRoomRoute() {
@@ -872,6 +1055,7 @@ object SecretRoutes : Feature(
     }
 
     fun getRoomHelperSnapshot(room: UniqueRoom): RouteHelperSnapshot? {
+        if (!ensureRoomContextLoaded(room)) return null
         val ctx = roomContext(room) ?: return null
         val route = routes[room.name] ?: return null
 
@@ -915,6 +1099,7 @@ object SecretRoutes : Feature(
     }
 
     fun buildStartLinkSteps(room: UniqueRoom, fromWorldStartBlock: BlockPos): List<RouteLinkStep>? {
+        if (!ensureRoomContextLoaded(room)) return null
         val ctx = roomContext(room) ?: return null
         val route = routes[room.name] ?: return null
         val fromRelative = toRelative(fromWorldStartBlock, ctx)
@@ -930,13 +1115,14 @@ object SecretRoutes : Feature(
             RouteLinkStep(
                 fromWorld = toWorld(link.from, ctx),
                 toWorld = toWorld(link.to, ctx),
-                rotation = if (yaw != null && pitch != null) MathUtils.Rotation(yaw, pitch) else null,
+                rotation = linkWorldRotation(ctx, yaw, pitch),
                 direction = link.direction
             )
         }
     }
 
     fun buildEndLinkSteps(room: UniqueRoom, toWorldEndBlock: BlockPos): List<RouteLinkStep>? {
+        if (!ensureRoomContextLoaded(room)) return null
         val ctx = roomContext(room) ?: return null
         val route = routes[room.name] ?: return null
         val routeEnd = routeEndBlockRelative(route) ?: return null
@@ -953,10 +1139,117 @@ object SecretRoutes : Feature(
             RouteLinkStep(
                 fromWorld = toWorld(link.from, ctx),
                 toWorld = toWorld(link.to, ctx),
-                rotation = if (yaw != null && pitch != null) MathUtils.Rotation(yaw, pitch) else null,
+                rotation = linkWorldRotation(ctx, yaw, pitch),
                 direction = link.direction
             )
         }
+    }
+
+    fun buildDoorwayLinkSteps(room: UniqueRoom, fromWorldEndBlock: BlockPos, toWorldEndBlock: BlockPos): List<RouteLinkStep>? {
+        if (!ensureRoomContextLoaded(room)) return null
+        val ctx = roomContext(room) ?: return null
+        val route = routes[room.name] ?: return null
+        val fromRelative = toRelative(fromWorldEndBlock, ctx)
+        val toRelative = toRelative(toWorldEndBlock, ctx)
+        val link = route.doorwayLinks.orEmpty()
+            .firstOrNull { it.from == fromRelative && it.to == toRelative }
+            ?: return null
+
+        var cursor = link.from
+        return link.steps.mapNotNull { step ->
+            val target = step.pos ?: return@mapNotNull null
+            RouteLinkStep(
+                fromWorld = toWorld(cursor, ctx),
+                toWorld = toWorld(target, ctx),
+                rotation = step.rotation(ctx),
+                direction = step.direction
+            ).also {
+                cursor = target
+            }
+        }.takeIf { it.isNotEmpty() && cursor == link.to }
+    }
+
+    private fun linkWorldRotation(ctx: RoomContext, relativeYaw: Float?, pitch: Float?): MathUtils.Rotation? {
+        if (relativeYaw == null || pitch == null) return null
+        return MathUtils.Rotation(
+            MathUtils.normalizeYaw(relativeYaw - ctx.rotation.toFloat()),
+            pitch
+        )
+    }
+
+    suspend fun playRouteLinkStep(
+        step: RouteLinkStep,
+        label: String = "route link",
+        keepSneakAfter: Boolean = false
+    ): Boolean {
+        val current = mc.player?.blockPosition()?.below() ?: return false
+        if (current != step.fromWorld) {
+            ChatUtils.modMessage(
+                "&cCannot execute $label: expected &e${step.fromWorld.toShortString()}&c, currently on &e${current.toShortString()}&c."
+            )
+            return false
+        }
+
+        return etherwarpTo(
+            target = step.toWorld,
+            isStartStep = false,
+            rotation = step.rotation,
+            face = step.direction,
+            requireRaytrace = false,
+            keepSneakAfter = keepSneakAfter
+        )
+    }
+
+    fun canPlayRoomRouteBetween(room: UniqueRoom, fromWorldStartBlock: BlockPos, toWorldEndBlock: BlockPos): Boolean {
+        if (!ensureRoomContextLoaded(room)) return false
+        val ctx = roomContext(room) ?: return false
+        val route = routes[room.name] ?: return false
+        val targetEnd = toRelative(toWorldEndBlock, ctx)
+        if (!canReachEndBlock(route, targetEnd)) return false
+        return resolvePlaybackPlan(
+            ctx,
+            route,
+            fromWorldStartBlock,
+            allowRouteStepResume = false,
+            targetEndBlock = targetEnd
+        ) != null
+    }
+
+    suspend fun playRoomRouteBetween(
+        room: UniqueRoom,
+        fromWorldStartBlock: BlockPos,
+        toWorldEndBlock: BlockPos,
+        progress: ((completedSteps: Int, totalSteps: Int) -> Unit)? = null
+    ): Boolean {
+        if (recording != null || startLinkRecording != null || endLinkRecording != null) {
+            ChatUtils.modMessage("&cStop Secret Routes recording before Dungeons TP Map playback.")
+            return false
+        }
+
+        if (!ensureRoomContextLoaded(room)) return false
+        val ctx = roomContext(room) ?: return false
+        val route = routes[room.name] ?: return false
+        val targetEnd = toRelative(toWorldEndBlock, ctx)
+        if (!canReachEndBlock(route, targetEnd)) return false
+        val plan = resolvePlaybackPlan(
+            ctx,
+            route,
+            fromWorldStartBlock,
+            allowRouteStepResume = false,
+            targetEndBlock = targetEnd
+        ) ?: return false
+
+        SecretRoutesDebugger.plan {
+            "Dungeons TP playback room=${room.name}, start=${fromWorldStartBlock.toShortString()}, end=${toWorldEndBlock.toShortString()}, steps=${plan.steps.size}"
+        }
+        playRoute(ctx, plan.steps, plan.primaryEndBlock, progress)
+        return mc.player?.blockPosition()?.below() == toWorldEndBlock
+    }
+
+    private fun canReachEndBlock(route: RoomRoute, targetEnd: BlockPos): Boolean {
+        if (targetEnd !in knownEndBlocksRelative(route)) return false
+        val routeEnd = routeEndBlockRelative(route) ?: return false
+        return routeEnd == targetEnd || resolveEndLinkChain(route, routeEnd, targetEnd).success
     }
 
     private fun normalizeRoutesConfigName(raw: String): String {
@@ -1076,6 +1369,7 @@ object SecretRoutes : Feature(
         if (recording != null) return ChatUtils.modMessage("&cSave or cancel the current /nsr recording before playback.")
         if (startLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr start recording before playback.")
         if (endLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr end recording before playback.")
+        if (doorwayLinkRecording != null) return ChatUtils.modMessage("&cFinish or cancel the current /nsr link recording before playback.")
         if (playbackJob?.isActive == true) return ChatUtils.modMessage("&eSecret Route playback is already running.")
 
         val ctx = currentRoomContext() ?: return ChatUtils.modMessage("&cYou must be standing in a scanned dungeon room to play a route.")
@@ -1146,7 +1440,10 @@ object SecretRoutes : Feature(
             return
         }
 
-        val ctx = currentRoomContext() ?: return
+        val ctx = currentRoomContext(requireStable = true) ?: run {
+            resetCenterHoldState()
+            return
+        }
         val route = routes[ctx.room.name] ?: return
         val playerStart = mc.player?.blockPosition()?.below() ?: return
         val plan = resolvePlaybackPlan(
@@ -1215,11 +1512,12 @@ object SecretRoutes : Feature(
         ctx: RoomContext,
         route: RoomRoute,
         playerStart: BlockPos,
-        allowRouteStepResume: Boolean = true
+        allowRouteStepResume: Boolean = true,
+        targetEndBlock: BlockPos? = primaryEndBlockRelative(route)
     ): PlaybackPlan? {
         val mainStartBlock = toWorld(route.startBlock, ctx)
-        val primaryEnd = primaryEndBlockRelative(route)
-        val endPostRoll = buildEndPostRollSteps(route, ctx)
+        val primaryEnd = targetEndBlock
+        val endPostRoll = buildEndPostRollSteps(route, ctx, targetEndBlock)
         SecretRoutesDebugger.plan {
             "Resolving plan room=${ctx.room.name}, playerStart=${playerStart.toShortString()}, mainStart=${mainStartBlock.toShortString()}"
         }
@@ -1269,7 +1567,7 @@ object SecretRoutes : Feature(
         }
 
         if (allowRouteStepResume) {
-            val anywherePlan = resolvePlaybackPlanFromAnywhere(ctx, route, playerStart)
+            val anywherePlan = resolvePlaybackPlanFromAnywhere(ctx, route, playerStart, targetEndBlock)
             if (anywherePlan != null) return anywherePlan
         } else {
             SecretRoutesDebugger.plan { "Route-step resume disabled for this plan resolution." }
@@ -1292,7 +1590,12 @@ object SecretRoutes : Feature(
         return worldStarts
     }
 
-    private fun resolvePlaybackPlanFromAnywhere(ctx: RoomContext, route: RoomRoute, playerStart: BlockPos): PlaybackPlan? {
+    private fun resolvePlaybackPlanFromAnywhere(
+        ctx: RoomContext,
+        route: RoomRoute,
+        playerStart: BlockPos,
+        targetEndBlock: BlockPos? = primaryEndBlockRelative(route)
+    ): PlaybackPlan? {
         if (!startRouteFromAnywhere.value) return null
         if (!isCenteredOnBlock(playerStart)) {
             SecretRoutesDebugger.plan {
@@ -1300,8 +1603,8 @@ object SecretRoutes : Feature(
             }
             return null
         }
-        val primaryEnd = primaryEndBlockRelative(route)
-        val endPostRoll = buildEndPostRollSteps(route, ctx)
+        val primaryEnd = targetEndBlock
+        val endPostRoll = buildEndPostRollSteps(route, ctx, targetEndBlock)
 
         val sequences = listOf(route.steps to false)
 
@@ -1345,7 +1648,13 @@ object SecretRoutes : Feature(
         return bestPlan
     }
 
-    private suspend fun playRoute(ctx: RoomContext, steps: List<RouteStep>, primaryEndBlock: BlockPos?) {
+    private suspend fun playRoute(
+        ctx: RoomContext,
+        steps: List<RouteStep>,
+        primaryEndBlock: BlockPos?,
+        progress: ((completedSteps: Int, totalSteps: Int) -> Unit)? = null
+    ) {
+        progress?.invoke(0, steps.size)
         for ((index, step) in steps.withIndex()) {
             SecretRoutesDebugger.step {
                 "Step ${index + 1}/${steps.size}: type=${step.type}, relPos=${step.pos?.toShortString()}, face=${step.direction}, yaw=${step.yaw}, pitch=${step.pitch}"
@@ -1356,40 +1665,69 @@ object SecretRoutes : Feature(
             when (step.type) {
                 RouteStepType.ETHERWARP -> {
                     val target = step.pos?.let { toWorld(it, ctx) } ?: continue
-                    if (!etherwarpTo(target, false, step.rotation(ctx), step.direction)) return
+                    val keepSneakAfter = steps.getOrNull(index + 1)?.type == RouteStepType.ETHERWARP
+                    if (!etherwarpTo(
+                            target,
+                            false,
+                            step.rotation(ctx),
+                            step.direction,
+                            step.requiresRaytrace,
+                            keepSneakAfter = keepSneakAfter
+                        )
+                    ) return
                 }
 
                 RouteStepType.PLACE_TNT -> {
+                    restoreHeldSneak()
                     val support = step.pos?.let { toWorld(it, ctx) } ?: continue
                     val face = step.direction ?: Direction.UP
                     if (!useTntStep(support, face, step.rotation(ctx))) return
                 }
 
                 RouteStepType.BREAK_BLOCK -> {
+                    restoreHeldSneak()
                     val target = step.pos?.let { toWorld(it, ctx) } ?: continue
                     if (!attackBlock(target, "DUNGEONBREAKER", "Dungeoneering Pickaxe", step.rotation(ctx))) return
                 }
 
                 RouteStepType.USE_HYPERION -> {
+                    restoreHeldSneak()
                     val target = step.pos?.let { toWorld(it, ctx) } ?: continue
                     if (!useTargetedStep(target, null, WITHER_BLADE_ITEM_IDS, "Hyperion", 0.1, step.rotation(ctx))) return
                 }
 
                 RouteStepType.RIGHT_CLICK_SECRET -> {
+                    restoreHeldSneak()
                     val target = step.pos?.let { toWorld(it, ctx) } ?: continue
-                    if (!useTargetedStep(target, step.direction, arrayOf("DUNGEONBREAKER"), "Dungeoneering Pickaxe", rotation = step.rotation(ctx))) return
+                    val requireRaytrace = shouldRequireRightClickSecretRaytrace(target) && !step.ignoreRaytrace
+                    if (!useTargetedStep(
+                            target,
+                            step.direction,
+                            arrayOf("DUNGEONBREAKER"),
+                            "Dungeoneering Pickaxe",
+                            rotation = step.rotation(ctx),
+                            requireRaytrace = requireRaytrace,
+                            continueOnRaytraceMiss = true
+                        )
+                    ) return
                     markRoomSecretProgress(ctx.room.name)
                 }
 
                 RouteStepType.WAIT_FOR_SECRET_PROGRESS -> {
+                    restoreHeldSneak()
                     if (waitForSecretProgress(ctx.room)) {
                         markRoomSecretProgress(ctx.room.name)
                     }
                 }
-                RouteStepType.WAIT_FOR_BAT_SPAWN -> waitForBatSpawn()
+                RouteStepType.WAIT_FOR_BAT_SPAWN -> {
+                    restoreHeldSneak()
+                    waitForBatSpawn()
+                }
             }
             SecretRoutesDebugger.step { "Step ${index + 1}/${steps.size} completed." }
+            progress?.invoke(index + 1, steps.size)
         }
+        restoreHeldSneak()
         val endMessage = primaryEndBlock
             ?.let { "&7(End: &b${toWorld(it, ctx).toShortString()}&7)" }
             .orEmpty()
@@ -1444,30 +1782,42 @@ object SecretRoutes : Feature(
         target: BlockPos,
         isStartStep: Boolean,
         rotation: MathUtils.Rotation? = null,
-        face: Direction? = null
+        face: Direction? = null,
+        requireRaytrace: Boolean = false,
+        keepSneakAfter: Boolean = false
     ): Boolean {
         SecretRoutesDebugger.etherwarp {
-            "Etherwarp start target=${target.toShortString()}, isStartStep=$isStartStep, face=$face, rotation=$rotation"
+            "Etherwarp start target=${target.toShortString()}, isStartStep=$isStartStep, face=$face, rotation=$rotation, requireRaytrace=$requireRaytrace, keepSneakAfter=$keepSneakAfter"
         }
-        PlayerUtils.findHotbarSlot { EtherwarpHelper.getEtherwarpDistance(it) != null }
-            ?.let(PlayerUtils::swapToSlot)
+        val slot = PlayerUtils.findHotbarSlot { EtherwarpHelper.getEtherwarpDistance(it) != null }
             ?: return abortPlayback("&cNo etherwarp item found in your hotbar.")
 
-        PlayerUtils.toggleSneak(true)
-        delay(INTERACT_DELAY_MS)
-        if (!aimForStep(target, rotation)) {
-            PlayerUtils.toggleSneak(false)
-            val prefix = if (isStartStep) "start block" else "etherwarp target"
-            return abortPlayback("&cCould not get line of sight to the $prefix at &e${target.toShortString()}&c.")
-        }
-        delay(50)
-        PlayerUtils.rightClick()
+        if (!selectHotbarSlot(slot, "etherwarp item")) return false
 
-        delay(50)
-        PlayerUtils.toggleSneak(false)
+        val previousSneak = mc.options.keyShift.isDown
+        if (keepSneakAfter && heldSneakRestoreState == null) {
+            heldSneakRestoreState = previousSneak
+        }
+        val targetVec = face?.let { BlockAimUtils.blockFaceCenter(target, it) } ?: BlockAimUtils.blockCenter(target)
+        var clicked = false
+        try {
+            setSneak(true)
+            if (!previousSneak) delay(INTERACT_DELAY_MS)
+            if (!aimForStep(target, rotation, targetVec, requireRaytrace)) {
+                val prefix = if (isStartStep) "start block" else "etherwarp target"
+                return abortPlayback("&cCould not get line of sight to the $prefix at &e${target.toShortString()}&c.")
+            }
+            delay(50)
+            rightClick()
+            clicked = true
+            delay(50)
+        } finally {
+            if (!keepSneakAfter || !clicked) restoreSneakAfterEtherwarp(previousSneak)
+        }
 
         val landed = waitForStandingOn(target)
         if (!landed) {
+            if (keepSneakAfter) restoreHeldSneak()
             SecretRoutesDebugger.etherwarp {
                 "Etherwarp landing timeout target=${target.toShortString()}, current=${mc.player?.blockPosition()?.below()?.toShortString()}."
             }
@@ -1486,13 +1836,14 @@ object SecretRoutes : Feature(
         itemIds: Array<String>?,
         itemName: String,
         yOffset: Double = 0.5,
-        rotation: MathUtils.Rotation? = null
+        rotation: MathUtils.Rotation? = null,
+        requireRaytrace: Boolean = true,
+        continueOnRaytraceMiss: Boolean = false
     ): Boolean {
         if (itemIds != null) {
             val slot = findItemSlot(*itemIds)
                 ?: return abortPlayback("&c$itemName is not on your hotbar.")
-            PlayerUtils.swapToSlot(slot)
-            delay(INTERACT_DELAY_MS)
+            if (!selectHotbarSlot(slot, itemName)) return false
             SecretRoutesDebugger.step { "Equipped $itemName slot=$slot for target=${block.toShortString()}." }
         }
 
@@ -1501,35 +1852,40 @@ object SecretRoutes : Feature(
             else -> BlockAimUtils.blockCenter(block, yOffset)
         }
 
-        if (!aimForStep(block, rotation, targetVec)) {
-            return abortPlayback("&cCould not aim at ${itemName.lowercase()} target &e${block.toShortString()}&c.")
+        if (!aimForStep(block, rotation, targetVec, requireRaytrace)) {
+            if (continueOnRaytraceMiss && continueSecretClickOnRaytraceMiss.value) {
+                ChatUtils.modMessage("&eRaytrace missed secret-click target &b${block.toShortString()}&e; trying right-click anyway.")
+                SecretRoutesDebugger.step {
+                    "Raytrace missed ${block.toShortString()}; continuing with right-click because Continue Secret Click Raytrace Miss is enabled."
+                }
+            } else {
+                return abortPlayback("&cCould not aim at ${itemName.lowercase()} target &e${block.toShortString()}&c.")
+            }
         }
 
         delay(INTERACT_DELAY_MS)
-        PlayerUtils.rightClick()
+        rightClick()
         delay(150)
         return true
     }
 
     private suspend fun useTntStep(block: BlockPos, face: Direction, rotation: MathUtils.Rotation?): Boolean {
         val slot = findTntSlot() ?: return abortPlayback("&cNo Superboom/Infinity Boom TNT is on your hotbar.")
-        PlayerUtils.swapToSlot(slot)
-        delay(INTERACT_DELAY_MS)
+        if (!selectHotbarSlot(slot, "Superboom TNT")) return false
         return useTargetedStep(block, face, null, "Superboom TNT", rotation = rotation)
     }
 
     private suspend fun attackBlock(block: BlockPos, itemId: String, itemName: String, rotation: MathUtils.Rotation? = null): Boolean {
         val slot = findItemSlot(itemId) ?: return abortPlayback("&c$itemName is not on your hotbar.")
 
-        PlayerUtils.swapToSlot(slot)
-        delay(INTERACT_DELAY_MS)
+        if (!selectHotbarSlot(slot, itemName)) return false
         SecretRoutesDebugger.step { "Equipped $itemName slot=$slot for break target=${block.toShortString()}." }
 
         if (!aimForStep(block, rotation)) {
             return abortPlayback("&cCould not aim at block break target &e${block.toShortString()}&c.")
         }
 
-        PlayerUtils.leftClick()
+        leftClick()
         delay(BREAK_STEP_DELAY_MS)
         return true
     }
@@ -1583,17 +1939,83 @@ object SecretRoutes : Feature(
         BlockAimUtils.aimAt(vec, rotationTimeMs.value.toLong())
         delay(INTERACT_DELAY_MS)
 
+        return isRaytraceOnBlock(block, vec)
+    }
+
+    private suspend fun aimForStep(
+        block: BlockPos,
+        rotation: MathUtils.Rotation?,
+        fallbackVec: Vec3 = BlockAimUtils.blockCenter(block),
+        requireRaytrace: Boolean = true
+    ): Boolean {
+        if (rotation == null) {
+            BlockAimUtils.aimAt(fallbackVec, rotationTimeMs.value.toLong())
+            delay(INTERACT_DELAY_MS)
+            return !requireRaytrace || isRaytraceOnBlock(block, fallbackVec)
+        }
+
+        PlayerUtils.rotateSmoothly(rotation, rotationTimeMs.value.toLong())
+        delay(INTERACT_DELAY_MS)
+        if (!requireRaytrace) return true
+        if (isRaytraceOnBlock(block, fallbackVec)) return true
+
+        SecretRoutesDebugger.step {
+            "Recorded rotation missed ${block.toShortString()}; falling back to direct target aim."
+        }
+        return aimAtTarget(block, fallbackVec)
+    }
+
+    private fun isRaytraceOnBlock(block: BlockPos, vec: Vec3): Boolean {
         val player = mc.player ?: return false
         val range = maxOf(6.0, player.position().distanceTo(vec) + 2.0)
         return MathUtils.raytrace(player, range) == block
     }
 
-    private suspend fun aimForStep(block: BlockPos, rotation: MathUtils.Rotation?, fallbackVec: Vec3 = BlockAimUtils.blockCenter(block)): Boolean {
-        if (rotation == null) return aimAtTarget(block, fallbackVec)
+    private suspend fun selectHotbarSlot(slot: Int, itemName: String): Boolean {
+        runOnMcThread { PlayerUtils.swapToSlot(slot) }
 
-        PlayerUtils.rotateSmoothly(rotation, rotationTimeMs.value.toLong())
-        delay(INTERACT_DELAY_MS)
-        return true
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < HOTBAR_SETTLE_TIMEOUT_MS) {
+            if (mc.player?.inventory?.selectedSlot == slot) {
+                delay(INTERACT_DELAY_MS)
+                return true
+            }
+            delay(10)
+        }
+
+        return abortPlayback("&cCould not switch to $itemName in hotbar slot ${slot + 1}.")
+    }
+
+    private fun setSneak(enabled: Boolean) {
+        runOnMcThread { PlayerUtils.toggleSneak(enabled) }
+    }
+
+    private fun restoreSneakAfterEtherwarp(previousSneak: Boolean) {
+        val restoreTo = heldSneakRestoreState
+        if (restoreTo != null) {
+            setSneak(restoreTo)
+            heldSneakRestoreState = null
+        } else {
+            setSneak(previousSneak)
+        }
+    }
+
+    fun restoreHeldSneak() {
+        val restoreTo = heldSneakRestoreState ?: return
+        setSneak(restoreTo)
+        heldSneakRestoreState = null
+    }
+
+    private fun rightClick() {
+        runOnMcThread { PlayerUtils.rightClick() }
+    }
+
+    private fun leftClick() {
+        runOnMcThread { PlayerUtils.leftClick() }
+    }
+
+    private fun runOnMcThread(block: () -> Unit) {
+        ThreadUtils.runOnMcThread(block)
     }
 
     private suspend fun waitForStandingOn(block: BlockPos): Boolean {
@@ -1649,6 +2071,7 @@ object SecretRoutes : Feature(
         playbackJob?.cancel()
         playbackJob = null
         activePlaybackRoomName = null
+        restoreHeldSneak()
         releaseMovement()
         if (message != null) ChatUtils.modMessage(message)
     }
@@ -1700,6 +2123,12 @@ object SecretRoutes : Feature(
 
     private fun isEndLinkRecordingCurrentRoom(): Boolean {
         val session = endLinkRecording ?: return false
+        val roomName = ScanUtils.currentRoom?.name ?: return false
+        return roomName == session.roomName
+    }
+
+    private fun isDoorwayLinkRecordingCurrentRoom(): Boolean {
+        val session = doorwayLinkRecording ?: return false
         val roomName = ScanUtils.currentRoom?.name ?: return false
         return roomName == session.roomName
     }
@@ -1772,6 +2201,63 @@ object SecretRoutes : Feature(
         return true
     }
 
+    private fun recordDoorwayLinkStep(): Boolean {
+        val session = doorwayLinkRecording ?: return false
+        val player = mc.player ?: return false
+        val distance = EtherwarpHelper.getEtherwarpDistance(player.mainHandItem) ?: return false
+        val etherPos = EtherwarpHelper.getEtherPos(player.position(), player.lookAngle, distance)
+        val target = etherPos.pos ?: return false
+        if (!etherPos.succeeded) return false
+
+        val ctx = currentRoomContext() ?: run {
+            doorwayLinkRecording = null
+            ChatUtils.modMessage("&c/nsr link failed: room context is no longer valid.")
+            return true
+        }
+        if (ctx.room.name != session.roomName) {
+            doorwayLinkRecording = null
+            ChatUtils.modMessage("&c/nsr link failed: left ${session.roomName}.")
+            return true
+        }
+
+        val route = routes[session.roomName] ?: run {
+            doorwayLinkRecording = null
+            ChatUtils.modMessage("&c/nsr link failed: no Secret Route saved for &e${session.roomName}&c.")
+            return true
+        }
+
+        val targetRelative = toRelative(target, ctx)
+        val direction = (mc.hitResult as? BlockHitResult)
+            ?.takeIf { it.blockPos == target }
+            ?.direction
+        val rotation = currentRelativeRotation()
+        val step = RouteStep(
+            type = RouteStepType.ETHERWARP,
+            pos = targetRelative,
+            direction = direction,
+            yaw = rotation?.yaw,
+            pitch = rotation?.pitch
+        )
+        session.steps.add(step)
+        ChatUtils.modMessage("&7Recorded /nsr link etherwarp &e${session.steps.size}&7 -> &b${target.toShortString()}&7.")
+
+        if (targetRelative == session.sourceEnd) return true
+        if (isRealDoorEndBlock(route, targetRelative)) {
+            val updatedLinks = route.doorwayLinks.orEmpty()
+                .filterNot { it.from == session.sourceEnd && it.to == targetRelative }
+                .toMutableList()
+            updatedLinks.add(DoorwayLink(session.sourceEnd, targetRelative, session.steps.toMutableList()))
+            routes[session.roomName] = route.copy(doorwayLinks = updatedLinks)
+            saveConfig()
+            doorwayLinkRecording = null
+            ChatUtils.modMessage(
+                "&aSaved /nsr link for &e${session.roomName}&a: &b${session.sourceEnd.toShortString()} &7-> &b${targetRelative.toShortString()}&a (${session.steps.size} EW)."
+            )
+        }
+
+        return true
+    }
+
     private suspend fun withRecordingPaused(block: suspend () -> Unit) {
         SecretRoutesDebugger.recording { "Recording paused." }
         recordingPaused = true
@@ -1795,9 +2281,17 @@ object SecretRoutes : Feature(
             ?.direction
 
         SecretRoutesDebugger.recording {
-            "Recorded etherwarp step target=${target.toShortString()}, direction=$direction, distance=$distance."
+            "Recorded etherwarp step target=${target.toShortString()}, direction=$direction, distance=$distance, requiresRaytrace=$nextEtherwarpRequiresRaytrace."
         }
-        appendStep(RouteStep(RouteStepType.ETHERWARP, currentRelativePos(target), direction = direction))
+        appendStep(
+            RouteStep(
+                type = RouteStepType.ETHERWARP,
+                pos = currentRelativePos(target),
+                direction = direction,
+                requiresRaytrace = nextEtherwarpRequiresRaytrace
+            )
+        )
+        nextEtherwarpRequiresRaytrace = false
         return true
     }
 
@@ -1955,7 +2449,13 @@ object SecretRoutes : Feature(
 
     private fun recordGhostHeadClick(): Boolean {
         val target = PersistentSecretHeads.findGhostHeadTargetForRoute() ?: return false
-        appendStep(RouteStep(RouteStepType.RIGHT_CLICK_SECRET, currentRelativePos(target)))
+        appendStep(
+            RouteStep(
+                RouteStepType.RIGHT_CLICK_SECRET,
+                currentRelativePos(target),
+                ignoreRaytrace = consumeRaytraceMarkerForRightClick()
+            )
+        )
         return true
     }
 
@@ -1975,6 +2475,12 @@ object SecretRoutes : Feature(
                 secondaryPos = currentRelativePos(clicked.relative(direction))
             )
         )
+        return true
+    }
+
+    private fun consumeRaytraceMarkerForRightClick(): Boolean {
+        if (!nextEtherwarpRequiresRaytrace) return false
+        nextEtherwarpRequiresRaytrace = false
         return true
     }
 
@@ -2004,7 +2510,12 @@ object SecretRoutes : Feature(
         }
 
         session.steps.add(recordedStep)
-        ChatUtils.modMessage("&7Recorded &e${recordedStep.type.name.lowercase().replace('_', ' ')}&7 step (${session.steps.size}).")
+        val suffix = when {
+            recordedStep.type == RouteStepType.ETHERWARP && recordedStep.requiresRaytrace -> " &7(raytrace)"
+            recordedStep.type == RouteStepType.RIGHT_CLICK_SECRET && recordedStep.ignoreRaytrace -> " &7(no raytrace)"
+            else -> ""
+        }
+        ChatUtils.modMessage("&7Recorded &e${recordedStep.type.name.lowercase().replace('_', ' ')}&7 step$suffix (${session.steps.size}).")
     }
 
     private fun currentRelativeRotation(): MathUtils.Rotation? {
@@ -2027,15 +2538,75 @@ object SecretRoutes : Feature(
         return ScanUtils.getRealCoord(relativePos, ctx.corner, ctx.rotation)
     }
 
-    private fun currentRoomContext(): RoomContext? {
-        val room = ScanUtils.currentRoom ?: return null
+    private fun currentRoomContext(requireStable: Boolean = false): RoomContext? {
+        val room = resolveCurrentRoom() ?: return null
+        if (requireStable && !isResolvedRoomStable(room)) return null
         return roomContext(room)
     }
 
+    private fun resolveCurrentRoom(): UniqueRoom? {
+        val playerRoom = mc.player?.position()?.let(ScanUtils::getRoomFromPos)
+        val cachedRoom = ScanUtils.currentRoom
+        if (playerRoom != null && cachedRoom != null && playerRoom !== cachedRoom) {
+            SecretRoutesDebugger.autoStart {
+                "Room context mismatch cached=${cachedRoom.name}, player=${playerRoom.name}; using player room."
+            }
+        }
+        return playerRoom ?: cachedRoom
+    }
+
+    private fun isResolvedRoomStable(room: UniqueRoom): Boolean {
+        val now = System.currentTimeMillis()
+        if (lastResolvedRoom !== room) {
+            lastResolvedRoom = room
+            lastResolvedRoomSince = now
+            return false
+        }
+        return now - lastResolvedRoomSince >= AUTO_START_ROOM_STABLE_MS
+    }
+
     private fun roomContext(room: UniqueRoom): RoomContext? {
+        ensureRoomContextLoaded(room)
         val corner = room.corner ?: return null
         val rotation = room.rotation?.let { 360 - it } ?: return null
         return RoomContext(room, rotation, corner)
+    }
+
+    fun ensureRoomContextLoaded(room: UniqueRoom): Boolean {
+        if (room.corner != null && room.rotation != null) return true
+        if (room.name == "Unknown") return false
+
+        room.findRotation()
+        if (room.corner != null && room.rotation != null) return true
+
+        if (!LocationUtils.inDungeon || LocationUtils.inBoss) return false
+        if (!WorldUtils.isChunkLoaded(room.mainRoom.x, room.mainRoom.z)) return false
+
+        val highest = room.highestBlock ?: ScanUtils.getHighestY(room.mainRoom.x, room.mainRoom.z)
+        if (highest <= 0) return false
+
+        room.highestBlock = highest
+        room.findRotation()
+        return room.corner != null && room.rotation != null
+    }
+
+    private fun renderableRouteContexts(): List<Pair<RoomContext, RoomRoute>> {
+        val scannedRouteContexts = DungeonInfo.dungeonList
+            .filterIsInstance<Room>()
+            .mapNotNull { it.uniqueRoom }
+            .distinctBy { it.name }
+            .mapNotNull { room ->
+                val route = routes[room.name] ?: return@mapNotNull null
+                if (!ensureRoomContextLoaded(room)) return@mapNotNull null
+                val ctx = roomContext(room) ?: return@mapNotNull null
+                ctx to route
+            }
+
+        if (scannedRouteContexts.isNotEmpty()) return scannedRouteContexts
+
+        val ctx = currentRoomContext() ?: return emptyList()
+        val route = routes[ctx.room.name] ?: return emptyList()
+        return listOf(ctx to route)
     }
 
     private fun renderRoute(event: RenderWorldEvent, ctx: RoomContext, route: RoomRoute) {
@@ -2146,6 +2717,25 @@ object SecretRoutes : Feature(
                         phase = phase
                     )
                 }
+
+            route.doorwayLinks.orEmpty().forEachIndexed { index, link ->
+                link.steps.mapNotNull { it.pos }
+                    .filter { it != link.from && it != link.to }
+                    .distinct()
+                    .forEach { relativeLinkStep ->
+                        val linkBlock = toWorld(relativeLinkStep, ctx)
+                        Render3D.renderBlock(event.ctx, linkBlock, doorwayLinkColor.value, phase = phase)
+                        Render3D.renderString(
+                            "Link ${index + 1}",
+                            linkBlock.x + 0.5,
+                            linkBlock.y + 1.2,
+                            linkBlock.z + 0.5,
+                            scale = 0.9f,
+                            color = Color.WHITE,
+                            phase = phase
+                        )
+                    }
+            }
         }
 
         if (renderEtherwarpLines.value) {
@@ -2164,6 +2754,24 @@ object SecretRoutes : Feature(
                     etherwarpLineWidth.value,
                     phase
                 )
+            }
+
+            route.startLinks.orEmpty().forEach { link ->
+                renderEtherwarpLine(event, toWorld(link.from, ctx), toWorld(link.to, ctx), etherwarpLineColor.value, phase)
+            }
+
+            route.endLinks.orEmpty().forEach { link ->
+                renderEtherwarpLine(event, toWorld(link.from, ctx), toWorld(link.to, ctx), etherwarpLineColor.value, phase)
+            }
+
+            route.doorwayLinks.orEmpty().forEach { link ->
+                val points = buildList {
+                    add(toWorld(link.from, ctx))
+                    link.steps.mapNotNullTo(this) { it.pos?.let { pos -> toWorld(pos, ctx) } }
+                }
+                points.zipWithNext { from, to ->
+                    renderEtherwarpLine(event, from, to, doorwayLinkColor.value, phase)
+                }
             }
         }
 
@@ -2203,6 +2811,17 @@ object SecretRoutes : Feature(
                 RouteStepType.WAIT_FOR_BAT_SPAWN -> Unit
             }
         }
+    }
+
+    private fun renderEtherwarpLine(event: RenderWorldEvent, from: BlockPos, to: BlockPos, color: Color, phase: Boolean) {
+        Render3D.renderLine(
+            event.ctx,
+            Vec3.atCenterOf(from),
+            Vec3.atCenterOf(to),
+            color,
+            etherwarpLineWidth.value,
+            phase
+        )
     }
 
     private fun renderTarget(
@@ -2301,6 +2920,12 @@ object SecretRoutes : Feature(
         return block.equalsOneOf(Blocks.BROWN_MUSHROOM, Blocks.RED_MUSHROOM, Blocks.REDSTONE_BLOCK)
     }
 
+    private fun shouldRequireRightClickSecretRaytrace(pos: BlockPos): Boolean {
+        if (PersistentSecretHeads.isPersistentGhostHead(pos)) return false
+        val block = mc.level?.getBlockState(pos)?.block ?: return true
+        return block != Blocks.LEVER
+    }
+
     private fun knownStartBlocksRelative(route: RoomRoute): Set<BlockPos> {
         val known = linkedSetOf(route.startBlock)
         val links = route.startLinks.orEmpty()
@@ -2338,6 +2963,15 @@ object SecretRoutes : Feature(
         return known
     }
 
+    private fun isRealDoorEndBlock(route: RoomRoute, block: BlockPos): Boolean {
+        val routeEnd = routeEndBlockRelative(route)
+        return block != routeEnd && block in route.endBlocks.orEmpty()
+    }
+
+    private fun doorwayLinkContains(link: DoorwayLink, block: BlockPos): Boolean {
+        return link.from == block || link.to == block || link.steps.any { it.pos == block }
+    }
+
     private fun inferEndBlockFromSteps(steps: List<RouteStep>): BlockPos? {
         steps.asReversed()
             .asSequence()
@@ -2351,10 +2985,15 @@ object SecretRoutes : Feature(
             .firstOrNull()
     }
 
-    private fun buildEndPostRollSteps(route: RoomRoute, ctx: RoomContext): List<RouteStep> {
+    private fun buildEndPostRollSteps(
+        route: RoomRoute,
+        ctx: RoomContext,
+        targetEndBlock: BlockPos? = primaryEndBlockRelative(route)
+    ): List<RouteStep> {
         val routeEnd = routeEndBlockRelative(route) ?: return emptyList()
-        val primaryEnd = primaryEndBlockRelative(route) ?: return emptyList()
+        val primaryEnd = targetEndBlock ?: return emptyList()
         if (routeEnd == primaryEnd) return emptyList()
+        if (primaryEnd !in knownEndBlocksRelative(route)) return emptyList()
 
         val chain = resolveEndLinkChain(route, routeEnd, primaryEnd)
         if (!chain.success) {

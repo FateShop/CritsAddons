@@ -9,16 +9,15 @@
   "client": [
     "AccessorAbstractContainerScreenStorageOverlay",
     "MixinAbstractContainerScreenStorageOverlay",
+    "MixinCameraInstantCrouch",
     "MixinFontManagerCustomFont",
     "MixinFontSetAccessor",
     "MixinGameRendererZoom",
     "MixinGuiStatDisplay",
     "MixinExperienceBarRendererStatDisplay",
-    "MixinLivingEntityRendererBetterGlow",
     "MixinMinecraft",
     "MixinMinecraftSetScreenStorageOverlay",
     "MixinMouseHandlerZoom",
-    "MixinPostPassBetterGlow",
     "MixinSlotStorageOverlay"
   ],
   "injectors": {

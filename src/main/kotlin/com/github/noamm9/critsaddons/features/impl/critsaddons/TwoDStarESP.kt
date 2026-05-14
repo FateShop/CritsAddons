@@ -25,9 +25,11 @@ import com.github.noamm9.utils.location.LocationUtils.inBoss
 import com.github.noamm9.utils.render.Render3D
 import com.github.noamm9.utils.render.RenderContext
 import net.minecraft.client.renderer.RenderPipelines
-import net.minecraft.client.renderer.RenderStateShard
-import net.minecraft.client.renderer.RenderType
-import net.minecraft.resources.ResourceLocation
+import net.minecraft.client.renderer.rendertype.LayeringTransform
+import net.minecraft.client.renderer.rendertype.RenderSetup
+import net.minecraft.client.renderer.rendertype.RenderType
+import net.minecraft.client.renderer.rendertype.RenderTypes
+import net.minecraft.resources.Identifier
 import net.minecraft.world.entity.Entity
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.ambient.Bat
@@ -72,28 +74,7 @@ object TwoDStarESP : Feature(
 
     private val starMobs = HashSet<Int>()
     private val checkedArmorStands = HashSet<Int>()
-    private val filledQuadsThroughWallsPipeline by lazy {
-        RenderPipelines.register(
-            RenderPipeline.builder(RenderPipelines.DEBUG_FILLED_SNIPPET)
-                .withLocation(ResourceLocation.fromNamespaceAndPath("critsaddons", "2d_star_esp_filled_quads_through_walls"))
-                .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.QUADS)
-                .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
-                .withCull(false)
-                .build()
-        )
-    }
-    private val filledQuadsThroughWallsLayer by lazy {
-        RenderType.create(
-            "critsaddons_2d_star_esp_filled_quads_through_walls",
-            1536,
-            false,
-            true,
-            filledQuadsThroughWallsPipeline,
-            RenderType.CompositeState.builder()
-                .setLayeringState(RenderStateShard.VIEW_OFFSET_Z_LAYERING)
-                .createCompositeState(false)
-        )
-    }
+    private val filledQuadsThroughWallsLayer by lazy(::createFilledQuadsThroughWallsLayer)
 
     override fun init() {
         register<RenderWorldEvent> {
@@ -182,7 +163,7 @@ object TwoDStarESP : Feature(
         val forward = if (rotateWithMob.value) {
             Vec3.directionFromRotation(0f, entity.yRot)
         } else {
-            event.ctx.camera.position.subtract(center)
+            event.ctx.camera.position().subtract(center)
         }
 
         val horizontal = Vec3(forward.x, 0.0, forward.z)
@@ -258,11 +239,11 @@ object TwoDStarESP : Feature(
         throughWalls: Boolean
     ) {
         val matrixStack = ctx.matrixStack
-        val camera = ctx.camera.position
+        val camera = ctx.camera.position()
         matrixStack.pushPose()
         matrixStack.translate(-camera.x, -camera.y, -camera.z)
 
-        val layer = if (throughWalls) filledQuadsThroughWallsLayer else RenderType.debugQuads()
+        val layer = if (throughWalls) filledQuadsThroughWallsLayer else RenderTypes.debugQuads()
         val consumer = ctx.consumers.getBuffer(layer)
         val pose = matrixStack.last()
         val normal = topRight.subtract(topLeft).cross(bottomLeft.subtract(topLeft)).normalize()
@@ -286,6 +267,42 @@ object TwoDStarESP : Feature(
         consumer.addVertex(pose, pos.x.toFloat(), pos.y.toFloat(), pos.z.toFloat())
             .setColor(color.red, color.green, color.blue, color.alpha)
             .setNormal(pose, normal)
+    }
+
+    private fun createFilledQuadsThroughWallsLayer(): RenderType {
+        return runCatching {
+            val snippetField = RenderPipelines::class.java.getDeclaredField("DEBUG_FILLED_SNIPPET").apply {
+                isAccessible = true
+            }
+            val snippet = snippetField.get(null) as RenderPipeline.Snippet
+            val pipeline = RenderPipeline.builder(snippet)
+                .withLocation(Identifier.fromNamespaceAndPath("critsaddons", "2d_star_esp_filled_quads_through_walls"))
+                .withVertexFormat(DefaultVertexFormat.POSITION_COLOR, VertexFormat.Mode.QUADS)
+                .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
+                .withCull(false)
+                .build()
+
+            val registerMethod = RenderPipelines::class.java.getDeclaredMethod("register", RenderPipeline::class.java).apply {
+                isAccessible = true
+            }
+            val registeredPipeline = registerMethod.invoke(null, pipeline) as RenderPipeline
+            val setup = RenderSetup.builder(registeredPipeline)
+                .sortOnUpload()
+                .setLayeringTransform(LayeringTransform.VIEW_OFFSET_Z_LAYERING)
+                .createRenderSetup()
+
+            val createMethod = RenderType::class.java.getDeclaredMethod(
+                "create",
+                String::class.java,
+                RenderSetup::class.java
+            ).apply {
+                isAccessible = true
+            }
+
+            createMethod.invoke(null, "critsaddons_2d_star_esp_filled_quads_through_walls", setup) as RenderType
+        }.getOrElse {
+            RenderTypes.debugQuads()
+        }
     }
 
     private fun getSpecialTarget(entity: Entity): Boolean {

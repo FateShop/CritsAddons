@@ -38,7 +38,11 @@ object NSRCompleted : Feature(
         RED(2, "&c")
     }
 
-    private data class RoomStatusEntry(val name: String, val status: RoomStatus)
+    private data class RoomStatusEntry(
+        val name: String,
+        val status: RoomStatus,
+        val linkStats: SecretRoutes.DoorwayLinkStats
+    )
 
     private val hudElement = object : HudElement() {
         override val name: String = "NSR Completed"
@@ -49,9 +53,9 @@ object NSRCompleted : Feature(
             val lines = if (example) {
                 listOf(
                     "&bNSR Completed",
-                    "&eCurrent Room",
-                    "&aFinished Room",
-                    "&cUnfinished Room"
+                    "&eCurrent Room &7[3/12 links]",
+                    "&aFinished Room &7[12/12 links]",
+                    "&cUnfinished Room &7[0/12 links]"
                 )
             } else {
                 buildHudLines()
@@ -102,13 +106,14 @@ object NSRCompleted : Feature(
                 completed -> RoomStatus.GREEN
                 else -> RoomStatus.RED
             }
-            RoomStatusEntry(roomName, status)
+            RoomStatusEntry(roomName, status, SecretRoutes.getDoorwayLinkStats(roomName))
         }.sortedWith(compareBy<RoomStatusEntry> { it.status.rank }.thenBy { it.name.lowercase(Locale.US) })
 
         val capped = entries.take(maxRows.value)
         val lines = mutableListOf("&bNSR Completed")
         capped.forEach { entry ->
-            lines.add("${entry.status.colorCode}${entry.name}")
+            val stats = entry.linkStats
+            lines.add("${entry.status.colorCode}${entry.name} &7[${stats.linked}/${stats.possible} links]")
         }
 
         if (entries.size > capped.size) {

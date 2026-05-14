@@ -25,14 +25,51 @@ object SecretRouteCommand: BaseCommand("nsr") {
         }
 
         literal("complete") {
+            literal("false") {
+                runs {
+                    SecretRoutes.markCurrentRoomCompleted(false)
+                }
+            }
+            literal("true") {
+                runs {
+                    SecretRoutes.markCurrentRoomCompleted(true)
+                }
+            }
             runs {
-                SecretRoutes.markCurrentRoomCompleted()
+                SecretRoutes.markCurrentRoomCompleted(true)
+            }
+        }
+
+        literal("completed") {
+            literal("false") {
+                runs {
+                    SecretRoutes.markCurrentRoomCompleted(false)
+                }
+            }
+            literal("true") {
+                runs {
+                    SecretRoutes.markCurrentRoomCompleted(true)
+                }
+            }
+            runs {
+                SecretRoutes.markCurrentRoomCompleted(true)
             }
         }
 
         literal("next") {
             runs {
                 SecretRoutes.startNextRoomRecording()
+            }
+        }
+
+        literal("link") {
+            literal("delete") {
+                runs {
+                    SecretRoutes.deleteDoorwayLinkFromCurrentBlock()
+                }
+            }
+            runs {
+                SecretRoutes.startDoorwayLinkRecording()
             }
         }
 
@@ -56,6 +93,12 @@ object SecretRouteCommand: BaseCommand("nsr") {
         literal("bat") {
             runs {
                 SecretRoutes.insertBatWaitStep()
+            }
+        }
+
+        literal("raytrace") {
+            runs {
+                SecretRoutes.requireRaytraceForNextEtherwarp()
             }
         }
 

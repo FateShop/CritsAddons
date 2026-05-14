@@ -3,7 +3,7 @@ package com.github.noamm9.critsaddons.mixins;
 import com.github.noamm9.critsaddons.features.impl.critsaddons.CustomFont;
 import net.minecraft.client.gui.font.FontManager;
 import net.minecraft.client.gui.font.FontSet;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -14,7 +14,7 @@ import java.util.Map;
 
 @Mixin(FontManager.class)
 public class MixinFontManagerCustomFont {
-    @Shadow private Map<ResourceLocation, FontSet> fontSets;
+    @Shadow private Map<Identifier, FontSet> fontSets;
 
     @Inject(method = "apply", at = @At("TAIL"))
     private void critsaddons$applyCustomFont(CallbackInfo ci) {

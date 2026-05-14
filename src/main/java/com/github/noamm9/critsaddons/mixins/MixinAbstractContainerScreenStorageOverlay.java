@@ -75,7 +75,7 @@ public abstract class MixinAbstractContainerScreenStorageOverlay<T extends Abstr
     }
 
     @Inject(method = "renderSlot", at = @At("HEAD"), cancellable = true)
-    private void critsaddons$beforeSlotRender(GuiGraphics guiGraphics, Slot slot, CallbackInfo ci) {
+    private void critsaddons$beforeSlotRender(GuiGraphics guiGraphics, Slot slot, int mouseX, int mouseY, CallbackInfo ci) {
         if (critsaddons$customGui != null) {
             if (!(slot.container instanceof net.minecraft.world.entity.player.Inventory)) {
                 ci.cancel();
@@ -86,7 +86,7 @@ public abstract class MixinAbstractContainerScreenStorageOverlay<T extends Abstr
     }
 
     @Inject(method = "renderSlot", at = @At("TAIL"))
-    private void critsaddons$afterSlotRender(GuiGraphics guiGraphics, Slot slot, CallbackInfo ci) {
+    private void critsaddons$afterSlotRender(GuiGraphics guiGraphics, Slot slot, int mouseX, int mouseY, CallbackInfo ci) {
         if (critsaddons$customGui != null) {
             critsaddons$customGui.afterSlotRender(guiGraphics, slot);
         }

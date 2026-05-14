@@ -8,6 +8,7 @@ import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
+import org.lwjgl.glfw.GLFW
 import java.awt.Color
 import kotlin.math.roundToInt
 
@@ -44,6 +45,7 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
     private val previewPathShadowColor = Color(14, 28, 34, 175)
     private val previewHopDotColor = Color(255, 212, 92, 255)
     private val previewHopDotBorderColor = Color(255, 255, 255, 235)
+    private val completeActiveColor = Color(240, 240, 240, 235)
     private val textColor = 0xFFFFFFFF.toInt()
     private val mutedTextColor = 0xFFD8D8D8.toInt()
     private val legendTextColor = 0xFFF2F2F2.toInt()
@@ -60,6 +62,10 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
         val currentRoomLabel = snapshot.currentRoom?.name ?: "Unknown"
         context.drawString(font, Component.literal("Current: $currentRoomLabel"), layout.panelX + 10, layout.panelY + 26, mutedTextColor, false)
         val statusText = when {
+            snapshot.activeCompleteRoomName != null -> {
+                val progress = snapshot.completeProgressPercent?.let { " $it%" }.orEmpty()
+                "Complete SR: ${snapshot.activeCompleteRoomName}$progress"
+            }
             snapshot.isTraveling -> "Traveling: ${snapshot.activeTargetRoomName ?: "Unknown"}"
             else -> "Click a completed room to route to it"
         }
@@ -74,6 +80,12 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
         val snapshot = DungeonsTPMap.currentSnapshot()
         val layout = buildLayout()
         val room = findClickedRoom(click.x(), click.y(), layout, snapshot) ?: return super.mouseClicked(click, doubled)
+        if (isShiftClick(click)) {
+            DungeonsTPMap.beginCompleteSecretRoute(room)
+            onClose()
+            return true
+        }
+
         DungeonsTPMap.beginTravel(room)
         onClose()
         return true
@@ -114,6 +126,7 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
                         when {
                             room == null -> emptyColor
                             room.name == snapshot.currentRoom?.name -> currentRoomColor
+                            room.name == snapshot.activeCompleteRoomName -> completeActiveColor
                             room.name == snapshot.activeTargetRoomName -> activeTargetColor
                             room.name in snapshot.readyRoomNames -> roomReadyColor
                             else -> roomBlockedColor
@@ -180,14 +193,30 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
         drawLegend(context, layout.panelX + 178, legendY, "Blocked", roomBlockedColor)
         drawLegend(context, layout.panelX + 270, legendY, "Door", normalDoorColor)
         drawLegend(context, layout.panelX + 346, legendY, "Target", activeTargetColor)
+
+        var infoY = legendY + 20
         preview?.let {
             context.drawString(
                 font,
                 Component.literal("Preview: ${it.label}"),
                 layout.panelX + 10,
-                legendY + 20,
+                infoY,
                 mutedTextColor,
                 false
+            )
+            infoY += 12
+        }
+
+        snapshot.activeCompleteRoomName?.let { active ->
+            val progress = snapshot.completeProgressPercent?.let { "$it%" } ?: "0%"
+            val detail = snapshot.completeProgressText?.let { " ($it)" }.orEmpty()
+            context.drawString(
+                font,
+                Component.literal("Complete SR: $active $progress$detail"),
+                layout.panelX + 10,
+                infoY,
+                textColor,
+                true
             )
         }
     }
@@ -310,7 +339,7 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
         val panelWidth = minOf(width - 20, 500)
         val cellSize = ((panelWidth - 40) / 11).coerceAtMost(36).coerceAtLeast(22)
         val mapSize = cellSize * 11
-        val panelHeight = mapSize + 104
+        val panelHeight = mapSize + 116
         val panelX = width / 2 - panelWidth / 2
         val panelY = height / 2 - panelHeight / 2
         val mapX = panelX + (panelWidth - mapSize) / 2
@@ -339,6 +368,9 @@ class DungeonsTPMapScreen : Screen(Component.literal("Dungeons TP Map")) {
             else -> ""
         }
     }
+
+    private fun isShiftClick(click: MouseButtonEvent): Boolean =
+        click.modifiers() and GLFW.GLFW_MOD_SHIFT != 0
 
     override fun isPauseScreen(): Boolean = false
     override fun shouldCloseOnEsc(): Boolean = true

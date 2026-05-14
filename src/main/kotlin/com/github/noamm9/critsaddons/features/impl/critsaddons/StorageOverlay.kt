@@ -95,7 +95,7 @@ class StorageOverlayCustom(
     }
 
     override fun onInit() {
-        overview.init(mc, screen.width, screen.height)
+        overview.init(screen.width, screen.height)
         val accessor = screen as AccessorAbstractContainerScreenStorageOverlay
         accessor.setLeftPosStorageOverlay(overview.measurements.x)
         accessor.setTopPosStorageOverlay(overview.measurements.y)

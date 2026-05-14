@@ -56,6 +56,8 @@ repositories {
 }
 
 dependencies {
+    val localNoammAddonsJar = file("libs/NoammAddons-1.21.11-cheat.jar")
+
     minecraft("com.mojang:minecraft:${project.property("minecraft_version")}")
     mappings(loom.officialMojangMappings())
     modImplementation("net.fabricmc:fabric-loader:${project.property("loader_version")}")
@@ -68,9 +70,21 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     include("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    modImplementation("com.github.Noamm9:NoammAddons:${project.property("noammaddons_version")}:${project.property("noammaddons_type")}")
+    if (localNoammAddonsJar.exists()) {
+        modImplementation(files(localNoammAddonsJar))
+    } else {
+        modImplementation("com.github.Noamm9:NoammAddons:${project.property("noammaddons_version")}:${project.property("noammaddons_type")}")
+    }
 
     testImplementation(kotlin("test"))
+}
+
+sourceSets {
+    main {
+        java.exclude(
+            "**/BetterGlow.kt"
+        )
+    }
 }
 
 tasks.register("setNoammAddonsVersion") {
@@ -142,11 +156,18 @@ tasks.processResources {
 }
 
 tasks.withType<JavaCompile>().configureEach {
+    exclude(
+        "**/MixinLivingEntityRendererBetterGlow.java",
+        "**/MixinPostPassBetterGlow.java"
+    )
     options.encoding = "UTF-8"
     options.release.set(targetJavaVersion)
 }
 
 tasks.withType<KotlinCompile>().configureEach {
+    exclude(
+        "**/BetterGlow.kt"
+    )
     compilerOptions.jvmTarget.set(JvmTarget.fromTarget(targetJavaVersion.toString()))
 }
 
